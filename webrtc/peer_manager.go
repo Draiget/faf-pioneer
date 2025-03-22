@@ -8,8 +8,10 @@ import (
 	"faf-pioneer/util"
 	"github.com/pion/webrtc/v4"
 	"go.uber.org/zap"
+	"net"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 type onPeerCandidatesGatheredCallback = func(*webrtc.SessionDescription, []webrtc.ICECandidate)
@@ -44,6 +46,9 @@ type PeerManager struct {
 	gameId               uint64
 	peerMu               sync.Mutex
 	peers                map[uint]*Peer
+	peerAddressesV4      map[uint32]bool
+	peerAddressesV6      map[[4]uint32]bool
+	peerAddressesMutex   sync.RWMutex
 	icebreakerClient     *icebreaker.Client
 	icebreakerEvents     <-chan icebreaker.EventMessage
 	turnServer           []webrtc.ICEServer
@@ -71,7 +76,13 @@ func NewPeerManager(
 		gameUdpPort:          gameUdpPort,
 		forceTurnRelay:       launcherInfo.ForceTurnRelay,
 		reconnectionRequests: make(chan uint, maxLobbyPeers),
+		peerAddressesV4:      make(map[uint32]bool, maxLobbyPeers),
+		peerAddressesV6:      make(map[[4]uint32]bool, maxLobbyPeers),
 	}
+
+	// Note:
+	// Setting maxLobbyPeers for `peerAddressesV4` and `peerAddressesV6` initial capacity does not bound its size:
+	// maps grow to accommodate the number of items stored in them.
 
 	return &peerManager
 }
@@ -171,6 +182,46 @@ func (p *PeerManager) handleIceBreakerEvent(msg icebreaker.EventMessage) {
 	}
 }
 
+func (p *PeerManager) StoreAllowedAddr(addr *net.IPAddr) {
+	if len(addr.IP) == net.IPv4len {
+		p.peerAddressesMutex.Lock()
+		defer p.peerAddressesMutex.Unlock()
+
+		numericIp := *(*uint32)(unsafe.Pointer(&addr.IP[0]))
+		p.peerAddressesV4[numericIp] = true
+		return
+	}
+
+	if len(addr.IP) == net.IPv6len {
+		p.peerAddressesMutex.Lock()
+		defer p.peerAddressesMutex.Unlock()
+
+		numericIp := *(*[4]uint32)(unsafe.Pointer(&addr.IP[0]))
+		p.peerAddressesV6[numericIp] = true
+		return
+	}
+}
+
+func (p *PeerManager) RemoveAllowedAddr(addr *net.IPAddr) {
+	if len(addr.IP) == net.IPv4len {
+		p.peerAddressesMutex.Lock()
+		defer p.peerAddressesMutex.Unlock()
+
+		numericIp := *(*uint32)(unsafe.Pointer(&addr.IP[0]))
+		delete(p.peerAddressesV4, numericIp)
+		return
+	}
+
+	if len(addr.IP) == net.IPv6len {
+		p.peerAddressesMutex.Lock()
+		defer p.peerAddressesMutex.Unlock()
+
+		numericIp := *(*[4]uint32)(unsafe.Pointer(&addr.IP[0]))
+		delete(p.peerAddressesV6, numericIp)
+		return
+	}
+}
+
 func (p *PeerManager) AddPeerIfMissing(playerId uint) PeerMeta {
 	return p.addPeerIfMissing(playerId)
 }
@@ -206,7 +257,7 @@ func (p *PeerManager) addPeerIfMissing(playerId uint) *Peer {
 
 	applog.Info("Creating new peer", zap.Uint("playerId", playerId))
 
-	// The smaller user id is always the offerer
+	// The smaller user id is always the offerer.
 	isOfferer := p.localUserId < playerId
 	peerUdpPort, err := util.GetFreeUdpPort()
 	if err != nil {
@@ -215,14 +266,12 @@ func (p *PeerManager) addPeerIfMissing(playerId uint) *Peer {
 	}
 
 	newPeer, err := CreatePeer(
+		p.ctx,
 		isOfferer,
 		playerId,
-		p.turnServer,
+		p,
 		peerUdpPort,
 		p.gameUdpPort,
-		p.onPeerCandidatesGathered(playerId),
-		p.onPeerStateChanged,
-		p.forceTurnRelay,
 	)
 	if err != nil {
 		applog.Error("Failed to create peer", zap.Uint("playerId", playerId), zap.Error(err))
@@ -241,15 +290,34 @@ func (p *PeerManager) onPeerStateChanged(peer *Peer, state webrtc.PeerConnection
 		zap.String("state", state.String()),
 	)
 
+	// Notify peer connection state change for `waitForCandidatePair`.
+	select {
+	case peer.connectionStateCh <- state:
+	default:
+	}
+
 	switch state {
 	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
-		applog.FromContext(peer.context).Info("Peer connection failed or closed, scheduling immediate reconnection")
+		select {
+		case <-peer.localAddrReady:
+		default:
+			close(peer.localAddrReady)
+		}
+
+		p.onPeerDisconnected(peer)
+
+		close(peer.candidatePairCh)
+		close(peer.connectionStateCh)
+
+		applog.FromContext(peer.context).Info(
+			"Peer connection failed or closed, scheduling immediate reconnection")
+
 		if state == webrtc.PeerConnectionStateFailed && peer.forceTurnRelay {
 			applog.FromContext(peer.context).Info("Switching to fallback relay All policy")
 			peer.forceTurnRelay = false
 		}
 		p.scheduleReconnection(peer.PeerId())
-
+		break
 	case webrtc.PeerConnectionStateDisconnected:
 		// WebRTC documentation saying:
 		// The ICE Agent has determined that connectivity is currently lost for this RTCIceTransport.
@@ -259,34 +327,96 @@ func (p *PeerManager) onPeerStateChanged(peer *Peer, state webrtc.PeerConnection
 		// The way this state is determined is implementation dependent.
 		// Suggesting to handle reconnection only on Failed or Closed state instead.
 		applog.FromContext(peer.context).Info("Peer disconnected, waiting to see if it recovers")
+		break
 
 	case webrtc.PeerConnectionStateConnected:
 		peer.reconnectionScheduled = false
+		// Gather initial states.
+		peer.updateCandidateMap()
 
-		var selectedCandidatePair webrtc.ICECandidatePairStats
-		candidates := make(map[string]webrtc.ICECandidateStats)
+		// Theoretically there could be a situation when `webrtc.PeerConnection` does not gather
+		// statistics yet when we entered `Connected` state as a webrtc.ICECandidatePairStats might be in a
+		// webrtc.StatsICECandidatePairStateInProgress state here.
+		// For that we will call another goroutine that will be waiting for waitForCandidatePair to
+		// set the local address and allow register data channel in peer.
 
-		for _, s := range peer.connection.GetStats() {
-			switch stat := s.(type) {
-			case webrtc.ICECandidateStats:
-				candidates[stat.ID] = stat
-			case webrtc.ICECandidatePairStats:
-				if stat.State == webrtc.StatsICECandidatePairStateSucceeded {
-					selectedCandidatePair = stat
-				}
-			default:
+		go func() {
+			pair, ok := waitForCandidatePair(peer.candidatePairCh, peer.connectionStateCh, peer.disabledCh)
+			if !ok {
+				applog.FromContext(peer.context).Error(
+					"Failed to receive succeeded candidate pair, connection lost or peer is in disabled state")
+				return
 			}
-		}
 
-		applog.FromContext(peer.context).Info(
-			"Local candidate",
-			zap.Any("candidate", candidates[selectedCandidatePair.LocalCandidateID]),
-		)
-		applog.FromContext(peer.context).Info(
-			"Remote candidate",
-			zap.Any("candidate", candidates[selectedCandidatePair.RemoteCandidateID]),
-		)
+			applog.Debug("Candidate pairs received, updating map")
+
+			// Make sure our map will now have fully updated candidate stats after `waitForCandidatePair`.
+			peer.updateCandidateMap()
+
+			localCandidate, okLocal := peer.candidateMap[pair.LocalCandidateID]
+			remoteCandidate, okRemote := peer.candidateMap[pair.RemoteCandidateID]
+			if !okLocal || !okRemote {
+				applog.FromContext(peer.context).Error("Could not find candidate pair in peer stats")
+				return
+			}
+
+			// Ignoring resolve error as it shouldn't really happen as WebRTC will be putting
+			// a valid IP address here.
+			localAddress, _ := net.ResolveIPAddr("ip", localCandidate.IP)
+			remoteAddress, _ := net.ResolveIPAddr("ip", remoteCandidate.IP)
+
+			peer.localAddress = localAddress
+			peer.remoteAddress = remoteAddress
+			close(peer.localAddrReady)
+
+			p.onPeerConnected(peer, remoteAddress)
+
+			applog.FromContext(peer.context).Info(
+				"Local candidate",
+				zap.Any("candidate", localCandidate),
+			)
+			applog.FromContext(peer.context).Info(
+				"Remote candidate",
+				zap.Any("candidate", remoteCandidate),
+			)
+		}()
+		break
 	default:
+		break
+	}
+}
+
+func waitForCandidatePair(
+	candidatePairCh <-chan webrtc.ICECandidatePairStats,
+	connectionStateCh <-chan webrtc.PeerConnectionState,
+	disabledCh <-chan struct{},
+) (webrtc.ICECandidatePairStats, bool) {
+	for {
+		select {
+		case pair, ok := <-candidatePairCh:
+			// Received event for a specific candidate pair.
+			if !ok {
+				return webrtc.ICECandidatePairStats{}, false
+			}
+
+			if pair.State == webrtc.StatsICECandidatePairStateSucceeded {
+				return pair, true
+			}
+			// If the candidate pair is still in progress, let's wait more.
+
+		case state, ok := <-connectionStateCh:
+			// Received event for a connection state.
+			if !ok {
+				return webrtc.ICECandidatePairStats{}, false
+			}
+			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+				return webrtc.ICECandidatePairStats{}, false
+			}
+
+		case <-disabledCh:
+			// When peer marked as Disabled, basically a Failed/Closed state.
+			return webrtc.ICECandidatePairStats{}, false
+		}
 	}
 }
 
@@ -310,5 +440,38 @@ func (p *PeerManager) onPeerCandidatesGathered(remotePeer uint) onPeerCandidates
 				zap.Error(err),
 			)
 		}
+	}
+}
+
+func (p *PeerManager) onPeerConnected(peer *Peer, remoteAddr *net.IPAddr) {
+	p.StoreAllowedAddr(remoteAddr)
+	p.peerMu.Lock()
+	defer p.peerMu.Unlock()
+	for _, localPeer := range p.peers {
+		if localPeer.peerId == peer.peerId {
+			continue
+		}
+
+		localPeer.gameDataProxy.UpdateAllowedAddresses(p.peerAddressesV4, p.peerAddressesV6)
+	}
+}
+
+func (p *PeerManager) onPeerDisconnected(peer *Peer) {
+	if peer.remoteAddress != nil {
+		applog.FromContext(peer.context).Debug(
+			"Removing failed/closed peer address from UDP allowed list",
+			zap.String("remoteAddress", peer.remoteAddress.String()),
+		)
+		p.RemoveAllowedAddr(peer.remoteAddress)
+	}
+
+	p.peerMu.Lock()
+	defer p.peerMu.Unlock()
+	for _, localPeer := range p.peers {
+		if localPeer.peerId == peer.peerId {
+			continue
+		}
+
+		localPeer.gameDataProxy.UpdateAllowedAddresses(p.peerAddressesV4, p.peerAddressesV6)
 	}
 }

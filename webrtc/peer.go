@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pion/webrtc/v4"
 	"go.uber.org/zap"
+	"net"
 	"sync"
 	"time"
 )
@@ -30,6 +31,10 @@ type Peer struct {
 	candidatesMux         sync.Mutex
 	onCandidatesGathered  onPeerCandidatesGatheredCallback
 	onStateChanged        func(peer *Peer, state webrtc.PeerConnectionState)
+	candidatePairCh       chan webrtc.ICECandidatePairStats
+	connectionStateCh     chan webrtc.PeerConnectionState
+	candidateMap          map[string]webrtc.ICECandidateStats
+	disabledCh            chan struct{}
 	gameToWebrtcChannel   chan []byte
 	webrtcToGameChannel   chan []byte
 	gameDataProxy         *util.GameUDPProxy
@@ -39,6 +44,9 @@ type Peer struct {
 	reconnectionScheduled bool
 	reconnectMu           sync.Mutex
 	disabled              bool
+	localAddress          *net.IPAddr
+	localAddrReady        chan struct{}
+	remoteAddress         *net.IPAddr
 }
 
 func (p *Peer) IsOfferer() bool {
@@ -63,6 +71,14 @@ func (p *Peer) Disable() {
 		"Peer disabled – no more reconnection attempts",
 		zap.Uint("peerId", p.peerId),
 	)
+
+	// Close channel to notify `waitForCandidatePair` that we should exit.
+	select {
+	case <-p.disabledCh:
+		// Already closed, ignore.
+	default:
+		close(p.disabledCh)
+	}
 }
 
 func (p *Peer) IsDisabled() bool {
@@ -72,18 +88,16 @@ func (p *Peer) IsDisabled() bool {
 }
 
 func CreatePeer(
+	parentContext context.Context,
 	offerer bool,
 	peerId uint,
-	iceServers []webrtc.ICEServer,
+	peerManager *PeerManager,
 	gameToWebrtcPort uint,
 	webrtcToGamePort uint,
-	onCandidatesGathered func(*webrtc.SessionDescription, []webrtc.ICECandidate),
-	onStateChanged func(p *Peer, newState webrtc.PeerConnectionState),
-	forceTurnRelay bool,
 ) (*Peer, error) {
 	var err error
 
-	ctx := applog.AddFields(context.Background(),
+	ctx := applog.AddFields(parentContext,
 		zap.Uint("remotePlayerId", peerId),
 		zap.Bool("localOfferer", offerer),
 	)
@@ -95,6 +109,7 @@ func CreatePeer(
 	// `gameToWebrtcPort` is from where we're proxying all the data to local game port.
 
 	gameUdpProxy, err := util.NewGameUDPProxy(
+		ctx,
 		webrtcToGamePort,
 		gameToWebrtcPort,
 		gameToWebrtcChannel,
@@ -120,14 +135,14 @@ func CreatePeer(
 		udpPort:              gameToWebrtcPort,
 		gameToWebrtcChannel:  gameToWebrtcChannel,
 		webrtcToGameChannel:  webrtcToGameChannel,
-		onCandidatesGathered: onCandidatesGathered,
-		onStateChanged:       onStateChanged,
+		onCandidatesGathered: peerManager.onPeerCandidatesGathered(peerId),
+		onStateChanged:       peerManager.onPeerStateChanged,
 		gameDataProxy:        gameUdpProxy,
 		webrtcApi:            webrtcApi,
-		forceTurnRelay:       forceTurnRelay,
+		forceTurnRelay:       peerManager.forceTurnRelay,
 	}
 
-	if err = peer.ConnectWithRetry(iceServers, peerReconnectionInterval); err != nil {
+	if err = peer.ConnectWithRetry(peerManager.turnServer, peerReconnectionInterval); err != nil {
 		return nil, peer.wrapError("cannot create peer connection", err)
 	}
 
@@ -169,6 +184,12 @@ func (p *Peer) reconnectWithPolicy(iceServers []webrtc.ICEServer, policy webrtc.
 		_ = p.connection.Close()
 	}
 
+	p.localAddress = nil
+	p.localAddrReady = make(chan struct{})
+	p.candidatePairCh = make(chan webrtc.ICECandidatePairStats, 1)
+	p.connectionStateCh = make(chan webrtc.PeerConnectionState, 1)
+	p.candidateMap = make(map[string]webrtc.ICECandidateStats)
+	p.disabledCh = make(chan struct{})
 	p.pendingCandidates = nil
 	p.offer = nil
 	p.answer = nil
@@ -251,10 +272,52 @@ func (p *Peer) registerConnectionHandlers() {
 
 	// Register data channel creation handling
 	p.connection.OnDataChannel(func(dataChannel *webrtc.DataChannel) {
+		applog.FromContext(p.context).Debug(
+			"Data channel opened for peer connection; waiting for local address form candidate pairs.")
+
+		// If local address are not set yet in `onPeerStateChanged` we will wait for it,
+		// otherwise it will be read instantly and no lock will occur,
+		// so DataChannel will be registered straight away.
+		<-p.localAddrReady
+
+		applog.FromContext(p.context).Debug(
+			"Data channel set for peer connection, registering it; local address are set.")
+
 		p.gameDataChannel = dataChannel
 		p.RegisterDataChannel()
 		dataChannel.Transport()
 	})
+
+	go p.pollCandidatePair()
+}
+
+func (p *Peer) pollCandidatePair() {
+	ticker := time.NewTicker(time.Millisecond * 300)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.context.Done():
+			return
+		case <-p.disabledCh:
+			return
+		case <-ticker.C:
+			if !p.IsActive() || p.IsDisabled() {
+				return
+			}
+
+			stats := p.connection.GetStats()
+			for _, stat := range stats {
+				if pair, ok := stat.(webrtc.ICECandidatePairStats); ok {
+					if pair.State == webrtc.StatsICECandidatePairStateSucceeded {
+						select {
+						case p.candidatePairCh <- pair:
+						default:
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (p *Peer) AddCandidates(session *webrtc.SessionDescription, candidates []webrtc.ICECandidate) error {
@@ -320,23 +383,18 @@ func (p *Peer) InitiateConnection() error {
 	return nil
 }
 
-func (p *Peer) IsActive() bool {
+func (p *Peer) updateCandidateMap() {
 	if p.connection == nil {
-		return false
+		return
 	}
 
-	state := p.connection.ConnectionState()
-	return state != webrtc.PeerConnectionStateClosed &&
-		state != webrtc.PeerConnectionStateFailed
-}
-
-func (p *Peer) Close() error {
-	p.gameDataProxy.Close()
-	if err := p.connection.Close(); err != nil {
-		return p.wrapError("cannot close peerConnection: %v\n", err)
+	stats := p.connection.GetStats()
+	for _, stat := range stats {
+		switch s := stat.(type) {
+		case webrtc.ICECandidateStats:
+			p.candidateMap[s.ID] = s
+		}
 	}
-
-	return nil
 }
 
 func (p *Peer) RegisterDataChannel() {
@@ -349,19 +407,39 @@ func (p *Peer) RegisterDataChannel() {
 	// Register channel opening handling
 	p.gameDataChannel.OnOpen(func() {
 		applog.FromContext(p.context).Info(
-			"Data channel opened",
+			"Data channel opened, waiting for local address to begin sending data",
+			zap.String("label", p.gameDataChannel.Label()),
+			zap.Any("id", util.PtrValueOrDef(p.gameDataChannel.ID(), 0)),
+		)
+
+		// If local address are not set yet in `onPeerStateChanged` we will wait for it,
+		// otherwise it will be read instantly and no lock will occur,
+		// so DataChannel will be registered straight away.
+		<-p.localAddrReady
+
+		applog.FromContext(p.context).Info(
+			"Received local address, starting data channel send exchange",
 			zap.String("label", p.gameDataChannel.Label()),
 			zap.Any("id", util.PtrValueOrDef(p.gameDataChannel.ID(), 0)),
 		)
 
 		go func() {
-			for msg := range p.gameToWebrtcChannel {
-				err := p.gameDataChannel.Send(msg)
-				if err != nil {
-					applog.FromContext(p.context).Error(
-						"Could not send data to WebRTC data channel",
-						zap.Error(err),
-					)
+			for {
+				select {
+				case msg, ok := <-p.gameToWebrtcChannel:
+					if !ok {
+						return
+					}
+
+					err := p.gameDataChannel.Send(msg)
+					if err != nil {
+						applog.FromContext(p.context).Error(
+							"Could not send data to WebRTC data channel",
+							zap.Error(err),
+						)
+					}
+				case <-p.context.Done():
+					return
 				}
 			}
 		}()
@@ -371,4 +449,27 @@ func (p *Peer) RegisterDataChannel() {
 	p.gameDataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
 		p.webrtcToGameChannel <- msg.Data
 	})
+}
+
+func (p *Peer) IsActive() bool {
+	if p.connection == nil {
+		return false
+	}
+
+	state := p.connection.ConnectionState()
+	return state != webrtc.PeerConnectionStateClosed &&
+		state != webrtc.PeerConnectionStateFailed
+}
+
+func (p *Peer) Close() error {
+	if !p.disabled {
+		p.Disable()
+	}
+
+	p.gameDataProxy.Close()
+	if err := p.connection.Close(); err != nil {
+		return p.wrapError("cannot close peerConnection: %v\n", err)
+	}
+
+	return nil
 }
