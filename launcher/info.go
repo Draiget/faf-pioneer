@@ -13,7 +13,6 @@ type Info struct {
 	ApiRoot          string
 	GpgNetPort       uint
 	GpgNetClientPort uint
-	GameUdpPort      uint
 	ForceTurnRelay   bool
 }
 
@@ -34,8 +33,6 @@ func NewInfoFromFlags() *Info {
 		"gpgnet-client-port", 0, "The port which on which the parent FAF client listens on")
 	forceTurnRelay := flag.Bool(
 		"force-turn-relay", false, "Force TURN relay using WebRTC")
-	gameUdpPort := flag.Uint(
-		"game-udp-port", 0, "The port which the game will send/receive game data")
 
 	flag.Parse()
 
@@ -47,7 +44,6 @@ func NewInfoFromFlags() *Info {
 		ApiRoot:          *apiRoot,
 		GpgNetPort:       *gpgNetPort,
 		GpgNetClientPort: *gpgNetClientPort,
-		GameUdpPort:      *gameUdpPort,
 		ForceTurnRelay:   *forceTurnRelay,
 	}
 }
