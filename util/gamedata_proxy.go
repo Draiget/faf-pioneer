@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"go.uber.org/zap"
 	"net"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -24,8 +23,6 @@ type GameUDPProxy struct {
 	gameMessagesSent     uint32
 	gameMessagesReceived uint32
 	gameMessagesDropped  uint32
-	allowedAddressesV4   atomic.Value
-	allowedAddressesV6   atomic.Value
 }
 
 func NewGameUDPProxy(
@@ -72,9 +69,6 @@ func NewGameUDPProxy(
 		dataFromGameChannel: dataFromGameChannel,
 	}
 
-	proxy.allowedAddressesV4.Store(make(map[uint32]bool))
-	proxy.allowedAddressesV6.Store(make(map[[4]uint32]bool))
-
 	applog.Debug("Running game UDP proxy",
 		zap.Uint("localPort", localPort),
 		zap.Uint("proxyPort", proxyPort))
@@ -83,10 +77,6 @@ func NewGameUDPProxy(
 	go proxy.sendLoop()
 
 	return proxy, nil
-}
-
-func (p *GameUDPProxy) UpdateAllowedAddresses(v4Map map[uint32]bool, v6Map map[[4]uint32]bool) {
-	p.allowedAddressesV4.Store(make(map[string]struct{}))
 }
 
 func (p *GameUDPProxy) Close() {
@@ -121,47 +111,33 @@ func (p *GameUDPProxy) receiveLoop() {
 			// it may cause additional performance degradation which we wanted to avoid.
 			// TODO: Remove `applog.Debug` calls after testing.
 
+			// Since this is a data that we receive from a game,
+			// we can only make sure that src-IP is a loopback one.
+
 			if len(addr.IP) == net.IPv4len {
 				numericIp := binary.BigEndian.Uint32(addr.IP)
 				// Checks that IP starts with a 127, basically 127.0.0.0/8 check,
 				// mean if it's not local IP we do allowance check, otherwise just pass that packet.
 				if (numericIp >> 24) != 127 {
-					allowedMap, ok := p.allowedAddressesV4.Load().(map[uint32]bool)
-					if !ok || allowedMap == nil {
-						applog.Debug("No allowed addresses set; dropping v4 packet",
-							zap.String("remoteAddress", addr.String()))
+					applog.Debug(
+						"Received UDP proxy packet from non-local address; dropping v4 packet",
+						zap.String("receivedFrom", addr.String()),
+					)
 
-						p.gameMessagesDropped++
-						continue
-					}
-					if _, exists := allowedMap[numericIp]; !exists {
-						applog.Debug("Dropping v4 packet from unknown peer/source",
-							zap.String("remoteAddress", addr.String()))
-
-						p.gameMessagesDropped++
-						continue
-					}
+					p.gameMessagesDropped++
+					continue
 				}
 			} else if len(addr.IP) == net.IPv6len {
-				numericIp := *(*[4]uint32)(unsafe.Pointer(&addr.IP[0]))
 				// Checks that it is ::1 loopback address,
 				// mean if it's not local IP we do allowance check, otherwise just pass that packet.
 				if *(*[16]byte)(unsafe.Pointer(&addr.IP[0])) != loopbackIpv6Addr {
-					allowedMap, ok := p.allowedAddressesV4.Load().(map[[4]uint32]bool)
-					if !ok || allowedMap == nil {
-						applog.Debug("No allowed addresses set; dropping v6 packet",
-							zap.String("remoteV6Address", addr.String()))
+					applog.Debug(
+						"Received UDP proxy packet from non-local address; dropping v6 packet",
+						zap.String("receivedFrom", addr.String()),
+					)
 
-						p.gameMessagesDropped++
-						continue
-					}
-					if _, exists := allowedMap[numericIp]; !exists {
-						applog.Debug("Dropping v6 packet from unknown peer/source",
-							zap.String("remoteV4Address", addr.String()))
-
-						p.gameMessagesDropped++
-						continue
-					}
+					p.gameMessagesDropped++
+					continue
 				}
 			} else {
 				// Just to the sake of safety and checks, let's ignore that weird packet

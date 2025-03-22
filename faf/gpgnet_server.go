@@ -287,13 +287,11 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 		applog.Info(
 			"Joining game (swapping the address/port)",
 			zap.Uint("targetPort", peer.GetUdpPort()),
-			zap.String("destination", msg.Destination),
 		)
 
 		return gpgnet.NewJoinGameMessage(
 			msg.RemotePlayerLogin,
 			msg.RemotePlayerId,
-			// msg.Destination,
 			fmt.Sprintf("127.0.0.1:%d", peer.GetUdpPort()),
 		)
 	case *gpgnet.ConnectToPeerMessage:
@@ -302,13 +300,11 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 		applog.Info(
 			"Connecting to peer (swapping the address/port)",
 			zap.Uint("targetPort", peer.GetUdpPort()),
-			zap.String("destination", msg.Destination),
 		)
 
 		return gpgnet.NewConnectToPeerMessage(
 			msg.RemotePlayerLogin,
 			msg.RemotePlayerId,
-			// msg.Destination,
 			fmt.Sprintf("127.0.0.1:%d", peer.GetUdpPort()),
 		)
 	case *gpgnet.DisconnectFromPeerMessage:
