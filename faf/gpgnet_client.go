@@ -43,7 +43,6 @@ func (s *GpgNetClient) Connect(toFafClientChannel chan gpgnet.Message, fromFafCl
 
 	s.loggerFields = []zapcore.Field{
 		zap.String("listenPort", fmt.Sprintf("%d", s.port)),
-		zap.String("remoteAddr", conn.RemoteAddr().String()),
 	}
 
 	applog.Info(

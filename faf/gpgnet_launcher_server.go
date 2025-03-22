@@ -12,53 +12,6 @@ import (
 	"net"
 )
 
-type GameCommand interface {
-	GetInitiatePackets() []gpgnet.Message
-}
-
-type GameCommandHostGame struct {
-	LocalGameUdpPort int32
-	PlayerId         int32
-	PlayerName       string
-}
-
-func (gc *GameCommandHostGame) GetInitiatePackets() []gpgnet.Message {
-	return []gpgnet.Message{
-		gpgnet.NewCreateLobbyMessage(
-			gpgnet.LobbyInitModeNormal,
-			gc.LocalGameUdpPort,
-			gc.PlayerName,
-			gc.PlayerId,
-		),
-		gpgnet.NewHostGameMessage(""),
-	}
-}
-
-type GameCommandJoinGame struct {
-	LocalGameUdpPort  int32
-	LocalPlayerId     int32
-	LocalPlayerName   string
-	RemotePlayerLogin string
-	RemotePlayerId    int32
-	RemotePeerUdpPort int32
-}
-
-func (gc *GameCommandJoinGame) GetInitiatePackets() []gpgnet.Message {
-	return []gpgnet.Message{
-		gpgnet.NewCreateLobbyMessage(
-			gpgnet.LobbyInitModeNormal,
-			gc.LocalGameUdpPort,
-			gc.LocalPlayerName,
-			gc.LocalPlayerId,
-		),
-		gpgnet.NewJoinGameMessage(
-			gc.RemotePlayerLogin,
-			gc.RemotePlayerId,
-			fmt.Sprintf("127.0.0.1:%d", gc.RemotePeerUdpPort),
-		),
-	}
-}
-
 type GpgNetLauncherServer struct {
 	ctx                  context.Context
 	port                 uint
@@ -157,12 +110,6 @@ func (s *GpgNetLauncherServer) Close() error {
 	}
 
 	return err
-}
-
-func (s *GpgNetLauncherServer) SendCommandToGame(command GameCommand) {
-	for _, msg := range command.GetInitiatePackets() {
-		s.currentClient.sendMessage(msg)
-	}
 }
 
 func (s *GpgNetLauncherServer) SendMessagesToGame(messages ...gpgnet.Message) {

@@ -31,8 +31,6 @@ type Peer struct {
 	candidatesMux         sync.Mutex
 	onCandidatesGathered  onPeerCandidatesGatheredCallback
 	onStateChanged        func(peer *Peer, state webrtc.PeerConnectionState)
-	candidatePairCh       chan webrtc.ICECandidatePairStats
-	connectionStateCh     chan webrtc.PeerConnectionState
 	candidateMap          map[string]webrtc.ICECandidateStats
 	disabledCh            chan struct{}
 	gameToWebrtcChannel   chan []byte
@@ -46,6 +44,7 @@ type Peer struct {
 	disabled              bool
 	localAddress          *net.IPAddr
 	localAddrReady        chan struct{}
+	localAddrReadyOnce    sync.Once
 	remoteAddress         *net.IPAddr
 }
 
@@ -57,7 +56,9 @@ func (p *Peer) PeerId() uint {
 	return p.peerId
 }
 
-func (p *Peer) GetUdpPort() uint { return p.udpPort }
+func (p *Peer) GetUdpPort() uint {
+	return p.udpPort
+}
 
 func (p *Peer) wrapError(format string, a ...any) error {
 	return fmt.Errorf("[Peer %d] %s", p.peerId, fmt.Sprintf(format, a...))
@@ -100,7 +101,11 @@ func CreatePeer(
 	ctx := applog.AddFields(parentContext,
 		zap.Uint("remotePlayerId", peerId),
 		zap.Bool("localOfferer", offerer),
+		zap.Uint("gameToWebrtcPort", gameToWebrtcPort),
+		zap.Uint("webrtcToGamePort", webrtcToGamePort),
 	)
+
+	applog.FromContext(ctx).Debug("Creating a peer")
 
 	gameToWebrtcChannel := make(chan []byte)
 	webrtcToGameChannel := make(chan []byte)
@@ -186,8 +191,6 @@ func (p *Peer) reconnectWithPolicy(iceServers []webrtc.ICEServer, policy webrtc.
 
 	p.localAddress = nil
 	p.localAddrReady = make(chan struct{})
-	p.candidatePairCh = make(chan webrtc.ICECandidatePairStats, 1)
-	p.connectionStateCh = make(chan webrtc.PeerConnectionState, 1)
 	p.candidateMap = make(map[string]webrtc.ICECandidateStats)
 	p.disabledCh = make(chan struct{})
 	p.pendingCandidates = nil
@@ -287,37 +290,6 @@ func (p *Peer) registerConnectionHandlers() {
 		p.RegisterDataChannel()
 		dataChannel.Transport()
 	})
-
-	go p.pollCandidatePair()
-}
-
-func (p *Peer) pollCandidatePair() {
-	ticker := time.NewTicker(time.Millisecond * 300)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-p.context.Done():
-			return
-		case <-p.disabledCh:
-			return
-		case <-ticker.C:
-			if !p.IsActive() || p.IsDisabled() {
-				return
-			}
-
-			stats := p.connection.GetStats()
-			for _, stat := range stats {
-				if pair, ok := stat.(webrtc.ICECandidatePairStats); ok {
-					if pair.State == webrtc.StatsICECandidatePairStateSucceeded {
-						select {
-						case p.candidatePairCh <- pair:
-						default:
-						}
-					}
-				}
-			}
-		}
-	}
 }
 
 func (p *Peer) AddCandidates(session *webrtc.SessionDescription, candidates []webrtc.ICECandidate) error {

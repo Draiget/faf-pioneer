@@ -87,6 +87,10 @@ func NewPeerManager(
 	return &peerManager
 }
 
+func (p *PeerManager) GetGameUdpPort() uint {
+	return p.gameUdpPort
+}
+
 func (p *PeerManager) Start() {
 	go p.runReconnectionManagement()
 
@@ -127,6 +131,12 @@ func (p *PeerManager) handleReconnection(playerId uint) {
 		p.scheduleReconnection(playerId)
 		return
 	}
+
+	if !peer.IsActive() {
+		return
+	}
+
+	// TODO: After `Peer connection state has changed` to `closed` this still reaches, debug more.
 
 	peer.reconnectionScheduled = false
 	applog.Info("Reconnection succeeded for peer", zap.Uint("playerId", playerId))
@@ -174,7 +184,10 @@ func (p *PeerManager) handleIceBreakerEvent(msg icebreaker.EventMessage) {
 		if peer.connection.ICEConnectionState() != webrtc.ICEConnectionStateConnected {
 			err := peer.AddCandidates(event.Session, event.Candidates)
 			if err != nil {
-				panic(err)
+				applog.FromContext(peer.context).Error(
+					"Could not add candidate to active peer connection",
+					zap.Error(err),
+				)
 			}
 		}
 	default:
@@ -290,24 +303,17 @@ func (p *PeerManager) onPeerStateChanged(peer *Peer, state webrtc.PeerConnection
 		zap.String("state", state.String()),
 	)
 
-	// Notify peer connection state change for `waitForCandidatePair`.
-	select {
-	case peer.connectionStateCh <- state:
-	default:
-	}
-
 	switch state {
 	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 		select {
 		case <-peer.localAddrReady:
 		default:
-			close(peer.localAddrReady)
+			peer.localAddrReadyOnce.Do(func() {
+				close(peer.localAddrReady)
+			})
 		}
 
 		p.onPeerDisconnected(peer)
-
-		close(peer.candidatePairCh)
-		close(peer.connectionStateCh)
 
 		applog.FromContext(peer.context).Info(
 			"Peer connection failed or closed, scheduling immediate reconnection")
@@ -316,6 +322,11 @@ func (p *PeerManager) onPeerStateChanged(peer *Peer, state webrtc.PeerConnection
 			applog.FromContext(peer.context).Info("Switching to fallback relay All policy")
 			peer.forceTurnRelay = false
 		}
+
+		peer.reconnectMu.Lock()
+		peer.reconnectionScheduled = false
+		peer.reconnectMu.Unlock()
+
 		p.scheduleReconnection(peer.PeerId())
 		break
 	case webrtc.PeerConnectionStateDisconnected:
@@ -340,83 +351,54 @@ func (p *PeerManager) onPeerStateChanged(peer *Peer, state webrtc.PeerConnection
 		// For that we will call another goroutine that will be waiting for waitForCandidatePair to
 		// set the local address and allow register data channel in peer.
 
-		go func() {
-			pair, ok := waitForCandidatePair(peer.candidatePairCh, peer.connectionStateCh, peer.disabledCh)
-			if !ok {
-				applog.FromContext(peer.context).Error(
-					"Failed to receive succeeded candidate pair, connection lost or peer is in disabled state")
-				return
+		var pair webrtc.ICECandidatePairStats
+		candidates := make(map[string]webrtc.ICECandidateStats)
+
+		for _, s := range peer.connection.GetStats() {
+			switch stat := s.(type) {
+			case webrtc.ICECandidateStats:
+				candidates[stat.ID] = stat
+			case webrtc.ICECandidatePairStats:
+				if stat.State == webrtc.StatsICECandidatePairStateSucceeded {
+					pair = stat
+				}
+			default:
 			}
+		}
 
-			applog.Debug("Candidate pairs received, updating map")
+		applog.Debug("Candidate pairs received, updating map")
 
-			// Make sure our map will now have fully updated candidate stats after `waitForCandidatePair`.
-			peer.updateCandidateMap()
+		localCandidate, okLocal := peer.candidateMap[pair.LocalCandidateID]
+		remoteCandidate, okRemote := peer.candidateMap[pair.RemoteCandidateID]
+		if !okLocal || !okRemote {
+			applog.FromContext(peer.context).Error("Could not find candidate pair in peer stats")
+			return
+		}
 
-			localCandidate, okLocal := peer.candidateMap[pair.LocalCandidateID]
-			remoteCandidate, okRemote := peer.candidateMap[pair.RemoteCandidateID]
-			if !okLocal || !okRemote {
-				applog.FromContext(peer.context).Error("Could not find candidate pair in peer stats")
-				return
-			}
+		// Ignoring resolve error as it shouldn't really happen as WebRTC will be putting
+		// a valid IP address here.
+		localAddress, _ := net.ResolveIPAddr("ip", localCandidate.IP)
+		remoteAddress, _ := net.ResolveIPAddr("ip", remoteCandidate.IP)
 
-			// Ignoring resolve error as it shouldn't really happen as WebRTC will be putting
-			// a valid IP address here.
-			localAddress, _ := net.ResolveIPAddr("ip", localCandidate.IP)
-			remoteAddress, _ := net.ResolveIPAddr("ip", remoteCandidate.IP)
-
-			peer.localAddress = localAddress
-			peer.remoteAddress = remoteAddress
+		peer.localAddress = localAddress
+		peer.remoteAddress = remoteAddress
+		peer.localAddrReadyOnce.Do(func() {
 			close(peer.localAddrReady)
+		})
 
-			p.onPeerConnected(peer, remoteAddress)
+		p.onPeerConnected(peer, remoteAddress)
 
-			applog.FromContext(peer.context).Info(
-				"Local candidate",
-				zap.Any("candidate", localCandidate),
-			)
-			applog.FromContext(peer.context).Info(
-				"Remote candidate",
-				zap.Any("candidate", remoteCandidate),
-			)
-		}()
+		applog.FromContext(peer.context).Info(
+			"Local candidate",
+			zap.Any("candidate", localCandidate),
+		)
+		applog.FromContext(peer.context).Info(
+			"Remote candidate",
+			zap.Any("candidate", remoteCandidate),
+		)
 		break
 	default:
 		break
-	}
-}
-
-func waitForCandidatePair(
-	candidatePairCh <-chan webrtc.ICECandidatePairStats,
-	connectionStateCh <-chan webrtc.PeerConnectionState,
-	disabledCh <-chan struct{},
-) (webrtc.ICECandidatePairStats, bool) {
-	for {
-		select {
-		case pair, ok := <-candidatePairCh:
-			// Received event for a specific candidate pair.
-			if !ok {
-				return webrtc.ICECandidatePairStats{}, false
-			}
-
-			if pair.State == webrtc.StatsICECandidatePairStateSucceeded {
-				return pair, true
-			}
-			// If the candidate pair is still in progress, let's wait more.
-
-		case state, ok := <-connectionStateCh:
-			// Received event for a connection state.
-			if !ok {
-				return webrtc.ICECandidatePairStats{}, false
-			}
-			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
-				return webrtc.ICECandidatePairStats{}, false
-			}
-
-		case <-disabledCh:
-			// When peer marked as Disabled, basically a Failed/Closed state.
-			return webrtc.ICECandidatePairStats{}, false
-		}
 	}
 }
 

@@ -21,7 +21,6 @@ type GameUDPProxy struct {
 	conn                 *net.UDPConn
 	dataToGameChannel    <-chan []byte
 	dataFromGameChannel  chan<- []byte
-	closed               bool
 	gameMessagesSent     uint32
 	gameMessagesReceived uint32
 	gameMessagesDropped  uint32

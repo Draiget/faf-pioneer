@@ -83,12 +83,14 @@ func (a *Adapter) Start() error {
 		applog.Debug("Forcing TURN relay on")
 	}
 
+	// a.launcherInfo.GameUdpPort
 	applog.Debug("Selected UDP game port", zap.Uint("gamePort", gameUdpPort))
 
 	peerManager := webrtc.NewPeerManager(
 		a.ctx,
 		a.icebreakerClient,
 		a.launcherInfo,
+		// a.launcherInfo.GameUdpPort
 		gameUdpPort,
 		turnServer,
 		iceBreakerEventChannel,

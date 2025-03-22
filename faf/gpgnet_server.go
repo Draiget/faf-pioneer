@@ -259,6 +259,20 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 		zap.String("rawMessageType", fmt.Sprintf("%T", rawMessage)))
 
 	switch msg := rawMessage.(type) {
+	case *gpgnet.CreateLobbyMessage:
+		targetPort := s.peerManager.GetGameUdpPort()
+
+		applog.Info(
+			"Received create lobby message, swapping lobby port",
+			append(s.loggerFields, zap.Uint("targetPort", targetPort))...,
+		)
+
+		return gpgnet.NewCreateLobbyMessage(
+			msg.LobbyInitMode,
+			int32(targetPort),
+			msg.LocalPlayerName,
+			msg.LocalPlayerId,
+		)
 	case *gpgnet.GameStateMessage:
 		applog.Info(
 			"Local game gameState changed",
@@ -268,27 +282,33 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 		s.state = msg.State
 		break
 	case *gpgnet.JoinGameMessage:
+		peer := s.peerManager.AddPeerIfMissing(uint(msg.RemotePlayerId))
+
 		applog.Info(
 			"Joining game (swapping the address/port)",
+			zap.Uint("targetPort", peer.GetUdpPort()),
+			zap.String("destination", msg.Destination),
 		)
-
-		peer := s.peerManager.AddPeerIfMissing(uint(msg.RemotePlayerId))
 
 		return gpgnet.NewJoinGameMessage(
 			msg.RemotePlayerLogin,
 			msg.RemotePlayerId,
+			// msg.Destination,
 			fmt.Sprintf("127.0.0.1:%d", peer.GetUdpPort()),
 		)
 	case *gpgnet.ConnectToPeerMessage:
+		peer := s.peerManager.AddPeerIfMissing(uint(msg.RemotePlayerId))
+
 		applog.Info(
 			"Connecting to peer (swapping the address/port)",
+			zap.Uint("targetPort", peer.GetUdpPort()),
+			zap.String("destination", msg.Destination),
 		)
-
-		peer := s.peerManager.AddPeerIfMissing(uint(msg.RemotePlayerId))
 
 		return gpgnet.NewConnectToPeerMessage(
 			msg.RemotePlayerLogin,
 			msg.RemotePlayerId,
+			// msg.Destination,
 			fmt.Sprintf("127.0.0.1:%d", peer.GetUdpPort()),
 		)
 	case *gpgnet.DisconnectFromPeerMessage:

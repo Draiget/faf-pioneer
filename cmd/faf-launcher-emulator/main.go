@@ -122,6 +122,33 @@ func main() {
 			continue
 		}
 
+		if strings.HasPrefix(value, "join_to") {
+			applog.Info("First joining stage sending JoinGameMessage")
+
+			args := strings.Split(value, " ")[1:]
+			user := args[0]
+			uid, _ := strconv.Atoi(args[1])
+			port, _ := strconv.Atoi(args[2])
+
+			server.SendMessagesToGame(
+				//gpgnet.NewCreateLobbyMessage(
+				//	gpgnet.LobbyInitModeNormal,
+				//	// LocalGameUdpPort
+				//	int32(info.GameUdpPort),
+				//	"UserB",
+				//	// PlayerId
+				//	int32(info.UserId),
+				//),
+				gpgnet.NewJoinGameMessage(
+					user,
+					int32(uid),
+					// fmt.Sprintf("127.0.0.1:%d", int32(info.GpgNetPort)),
+					fmt.Sprintf("127.0.0.1:%d", port),
+				),
+			)
+			continue
+		}
+
 		if strings.HasPrefix(value, "connect_to") {
 			applog.Info("Sending join game messages to the adapter/game")
 
