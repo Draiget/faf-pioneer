@@ -51,31 +51,35 @@ type LogEntry struct {
 
 func Info(msg string, fields ...zapcore.Field) {
 	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.InfoLevel, msg)
+	entry.Write(fields...)
 	logToRemote(entry, fields)
 }
 
 func Warn(msg string, fields ...zapcore.Field) {
 	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.WarnLevel, msg)
+	entry.Write(fields...)
 	logToRemote(entry, fields)
 }
 
 func Debug(msg string, fields ...zapcore.Field) {
 	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.DebugLevel, msg)
+	entry.Write(fields...)
 	logToRemote(entry, fields)
 }
 
 func Error(msg string, fields ...zapcore.Field) {
 	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.ErrorLevel, msg)
+	entry.Write(fields...)
 	logToRemote(entry, fields)
 }
 
 func Fatal(msg string, fields ...zapcore.Field) {
 	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.FatalLevel, msg)
+	entry.Write(fields...)
 	logToRemote(entry, fields)
 }
 
 func logToRemote(entry *zapcore.CheckedEntry, fields []zapcore.Field) {
-	entry.Write(fields...)
 	if remoteLogger == nil || entry == nil || atomic.LoadInt32(&acceptingLogs) == 0 {
 		return
 	}
