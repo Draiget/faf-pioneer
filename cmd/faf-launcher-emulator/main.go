@@ -24,6 +24,7 @@ func main() {
 	info := launcher.NewInfoFromFlags()
 	applog.Initialize(info.UserId, info.GameId)
 	defer applog.Shutdown()
+	defer util.WrapAppContextCancelExitMessage(ctx, "Launcher-emulator")
 
 	if err := info.Validate(); err != nil {
 		applog.Fatal("Failed to validate command line arguments", zap.Error(err))
@@ -65,6 +66,17 @@ func main() {
 	cr := util.NewCancelableIoReader(ctx, os.Stdin)
 	scanner := bufio.NewScanner(cr)
 
+	// How to test
+	// - For Host (UserA) start faf-launcher-emulator and then faf-adapter.
+	// - For Host (UserA) type in faf-launcher-emulator a command:
+	//   > host.
+	// Then another player should join as:
+	// - For Host (UserB) start faf-launcher-emulator and then faf-adapter.
+	// - For Host (UserB) type in faf-launcher-emulator a command:
+	//   > `join_to UserA 1 <gameToWebrtcPort of UserA>`
+	// - For Host (UserA) type in faf-launcher-emulator a command:
+	//   > `connect_to UserB 2 <gameToWebrtcPort of UserB>`
+
 	for scanner.Scan() {
 		value := scanner.Text()
 		applog.Debug("Entered command", zap.String("rawCommand", value))
@@ -78,48 +90,7 @@ func main() {
 			}
 
 			server.SendMessagesToGame(
-				//gpgnet.NewCreateLobbyMessage(
-				//	gpgnet.LobbyInitModeNormal,
-				//	// LocalGameUdpPort
-				//	int32(info.GameUdpPort),
-				//	"UserA",
-				//	// PlayerId
-				//	int32(info.UserId),
-				//),
 				gpgnet.NewHostGameMessage(""),
-			)
-			continue
-		}
-
-		if strings.HasPrefix(value, "accept") {
-			applog.Info("Emulating that UserB trying to connect to our hosted game")
-
-			server.SendMessagesToGame(gpgnet.NewConnectToPeerMessage(
-				"UserB",
-				2,
-				"127.0.0.1:14081",
-			))
-			continue
-		}
-
-		if strings.HasPrefix(value, "join") {
-			applog.Info("First joining stage sending JoinGameMessage")
-
-			server.SendMessagesToGame(
-				//gpgnet.NewCreateLobbyMessage(
-				//	gpgnet.LobbyInitModeNormal,
-				//	// LocalGameUdpPort
-				//	int32(info.GameUdpPort),
-				//	"UserB",
-				//	// PlayerId
-				//	int32(info.UserId),
-				//),
-				gpgnet.NewJoinGameMessage(
-					"UserA",
-					1,
-					// fmt.Sprintf("127.0.0.1:%d", int32(info.GpgNetPort)),
-					fmt.Sprintf("127.0.0.1:%d", 14080),
-				),
 			)
 			continue
 		}
@@ -133,18 +104,9 @@ func main() {
 			port, _ := strconv.Atoi(args[2])
 
 			server.SendMessagesToGame(
-				//gpgnet.NewCreateLobbyMessage(
-				//	gpgnet.LobbyInitModeNormal,
-				//	// LocalGameUdpPort
-				//	int32(info.GameUdpPort),
-				//	"UserB",
-				//	// PlayerId
-				//	int32(info.UserId),
-				//),
 				gpgnet.NewJoinGameMessage(
 					user,
 					int32(uid),
-					// fmt.Sprintf("127.0.0.1:%d", int32(info.GpgNetPort)),
 					fmt.Sprintf("127.0.0.1:%d", port),
 				),
 			)
@@ -177,16 +139,5 @@ func main() {
 			_ = server.Close()
 			return
 		}
-
-		// User B (second user) should run:
-		// Send JoinGameMessage to UDP port of second player `fmt.Sprintf("127.0.0.1:%d", 14080)`
-		// Commands:
-		// join
-
-		// User A (host) should run:
-		// Send HostGameMessage to FAF.exe
-		// Commands:
-		// host
-		// accept (or `connect_to UserB 2 14081`)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"faf-pioneer/adapter"
 	"faf-pioneer/applog"
 	"faf-pioneer/launcher"
+	"faf-pioneer/util"
 	"go.uber.org/zap"
 	"os/signal"
 	"syscall"
@@ -17,6 +18,7 @@ func main() {
 	info := launcher.NewInfoFromFlags()
 	applog.Initialize(info.UserId, info.GameId)
 	defer applog.Shutdown()
+	defer util.WrapAppContextCancelExitMessage(ctx, "Adapter")
 
 	if err := info.Validate(); err != nil {
 		applog.Fatal("Failed to validate command line arguments", zap.Error(err))

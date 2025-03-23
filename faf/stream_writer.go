@@ -46,22 +46,22 @@ func (w *StreamWriter) writeArgs(args []interface{}) error {
 	for index, arg := range args {
 		switch v := arg.(type) {
 		case int:
-			w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
-			binary.Write(w.w, binary.LittleEndian, int32(v))
+			_ = w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
+			_ = binary.Write(w.w, binary.LittleEndian, int32(v))
 		case uint:
-			w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
-			binary.Write(w.w, binary.LittleEndian, int32(v))
+			_ = w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
+			_ = binary.Write(w.w, binary.LittleEndian, int32(v))
 		case uint16:
-			w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
-			binary.Write(w.w, binary.LittleEndian, int32(v))
+			_ = w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
+			_ = binary.Write(w.w, binary.LittleEndian, int32(v))
 		case uint32:
-			w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
-			binary.Write(w.w, binary.LittleEndian, v)
+			_ = w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
+			_ = binary.Write(w.w, binary.LittleEndian, v)
 		case int32:
-			w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
-			binary.Write(w.w, binary.LittleEndian, v)
+			_ = w.w.WriteByte(FaStreamConstants.FieldTypes.INT)
+			_ = binary.Write(w.w, binary.LittleEndian, v)
 		case string:
-			w.w.WriteByte(FaStreamConstants.FieldTypes.STRING)
+			_ = w.w.WriteByte(FaStreamConstants.FieldTypes.STRING)
 			if err := w.writeString(v); err != nil {
 				return err
 			}

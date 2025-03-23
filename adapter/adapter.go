@@ -48,6 +48,10 @@ func (a *Adapter) Start() error {
 		return fmt.Errorf("could not query turn servers: %v", err)
 	}
 
+	if a.launcherInfo.ConsentLogSharing {
+		applog.SetRemoteLogger(a.icebreakerClient)
+	}
+
 	iceBreakerEventChannel := make(chan icebreaker.EventMessage)
 	go func() {
 		if err = a.icebreakerClient.Listen(iceBreakerEventChannel); err != nil {

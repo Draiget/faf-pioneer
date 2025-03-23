@@ -9,29 +9,88 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Logger = zap.Logger
 
+type LocalLogger struct {
+	logger *zap.Logger
+}
+
+func (l LocalLogger) Info(msg string, fields ...zap.Field) {
+	l.logger.WithOptions(zap.AddCallerSkip(1)).Info(msg, fields...)
+}
+
+func (l LocalLogger) Debug(msg string, fields ...zap.Field) {
+	l.logger.WithOptions(zap.AddCallerSkip(1)).Debug(msg, fields...)
+}
+
+func (l LocalLogger) Error(msg string, fields ...zap.Field) {
+	l.logger.WithOptions(zap.AddCallerSkip(1)).Error(msg, fields...)
+}
+
+func (l LocalLogger) Fatal(msg string, fields ...zap.Field) {
+	l.logger.WithOptions(zap.AddCallerSkip(1)).Fatal(msg, fields...)
+}
+
+func OnlyLocal() LocalLogger {
+	return LocalLogger{logger: def}
+}
+
+type RemoteLogger interface {
+	WriteLogEntryToRemote(entry *LogEntry) error
+}
+
+type LogEntry struct {
+	Entry  *zapcore.CheckedEntry
+	Fields []zap.Field
+}
+
 func Info(msg string, fields ...zapcore.Field) {
-	def.WithOptions(zap.AddCallerSkip(1)).Info(msg, fields...)
+	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.InfoLevel, msg)
+	logToRemote(entry, fields)
 }
 
 func Warn(msg string, fields ...zapcore.Field) {
-	def.WithOptions(zap.AddCallerSkip(1)).Warn(msg, fields...)
+	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.WarnLevel, msg)
+	logToRemote(entry, fields)
 }
 
 func Debug(msg string, fields ...zapcore.Field) {
-	def.WithOptions(zap.AddCallerSkip(1)).Debug(msg, fields...)
+	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.DebugLevel, msg)
+	logToRemote(entry, fields)
 }
 
 func Error(msg string, fields ...zapcore.Field) {
-	def.WithOptions(zap.AddCallerSkip(1)).Error(msg, fields...)
+	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.ErrorLevel, msg)
+	logToRemote(entry, fields)
 }
 
 func Fatal(msg string, fields ...zapcore.Field) {
-	def.WithOptions(zap.AddCallerSkip(1)).Fatal(msg, fields...)
+	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.FatalLevel, msg)
+	logToRemote(entry, fields)
+}
+
+func logToRemote(entry *zapcore.CheckedEntry, fields []zapcore.Field) {
+	entry.Write(fields...)
+	if remoteLogger == nil || entry == nil || atomic.LoadInt32(&acceptingLogs) == 0 {
+		return
+	}
+
+	remoteEntry := &LogEntry{
+		Entry:  entry,
+		Fields: fields,
+	}
+
+	if err := remoteLogger.WriteLogEntryToRemote(remoteEntry); err != nil {
+		def.WithOptions(zap.AddCallerSkip(1)).Debug(
+			"failed to write into remote log server",
+			zap.Error(err),
+		)
+	}
 }
 
 func LogStartup(launchArgs interface{}) {
@@ -49,6 +108,10 @@ func LogStartup(launchArgs interface{}) {
 
 func GetLogger() *Logger {
 	return def
+}
+
+func SetRemoteLogger(rl RemoteLogger) {
+	remoteLogger = rl
 }
 
 func FromContext(ctx context.Context) *Logger {
@@ -85,9 +148,39 @@ func Initialize(userId uint, gameId uint64) {
 		zap.Uint64("localGameId", gameId))
 
 	setLogger(l)
+	atomic.StoreInt32(&acceptingLogs, 1)
 }
 
 func Shutdown() {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Let our logger sync entries to disk and flush buffers.
+	go func() {
+		defer wg.Done()
+		_ = def.Sync()
+	}()
+
+	// Let our logger write more logs for 0.5 second if we have something pending after
+	// main context was canceled.
+	go func() {
+		defer wg.Done()
+		time.Sleep(500 * time.Millisecond)
+		atomic.StoreInt32(&acceptingLogs, 0)
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// Give sync and accepting log setter 3 seconds to finish everything and then shutdown.
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
+
 	if logFile != nil {
 		_ = logFile.Close()
 	}
@@ -130,8 +223,10 @@ var (
 	opts = []zap.Option{
 		zap.AddCaller(),
 	}
-	def     = newLogger(opts...)
-	logFile *os.File
+	def           = newLogger(opts...)
+	logFile       *os.File
+	remoteLogger  RemoteLogger
+	acceptingLogs int32 = 0
 )
 
 func newLogger(opts ...zap.Option) *Logger {

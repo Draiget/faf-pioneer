@@ -6,14 +6,15 @@ import (
 )
 
 type Info struct {
-	UserId           uint
-	UserName         string
-	GameId           uint64
-	AccessToken      string `json:"-"`
-	ApiRoot          string
-	GpgNetPort       uint
-	GpgNetClientPort uint
-	ForceTurnRelay   bool
+	UserId            uint
+	UserName          string
+	GameId            uint64
+	AccessToken       string `json:"-"`
+	ApiRoot           string
+	GpgNetPort        uint
+	GpgNetClientPort  uint
+	ForceTurnRelay    bool
+	ConsentLogSharing bool
 }
 
 func NewInfoFromFlags() *Info {
@@ -33,18 +34,21 @@ func NewInfoFromFlags() *Info {
 		"gpgnet-client-port", 0, "The port which on which the parent FAF client listens on")
 	forceTurnRelay := flag.Bool(
 		"force-turn-relay", false, "Force TURN relay using WebRTC")
+	consentLogSharing := flag.Bool(
+		"consent-log-sharing", false, "Consent log sharing")
 
 	flag.Parse()
 
 	return &Info{
-		UserId:           *userId,
-		UserName:         *userName,
-		GameId:           *gameId,
-		AccessToken:      *accessToken,
-		ApiRoot:          *apiRoot,
-		GpgNetPort:       *gpgNetPort,
-		GpgNetClientPort: *gpgNetClientPort,
-		ForceTurnRelay:   *forceTurnRelay,
+		UserId:            *userId,
+		UserName:          *userName,
+		GameId:            *gameId,
+		AccessToken:       *accessToken,
+		ApiRoot:           *apiRoot,
+		GpgNetPort:        *gpgNetPort,
+		GpgNetClientPort:  *gpgNetClientPort,
+		ForceTurnRelay:    *forceTurnRelay,
+		ConsentLogSharing: *consentLogSharing,
 	}
 }
 

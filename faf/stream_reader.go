@@ -71,6 +71,10 @@ func (f *StreamReader) ReadString() (string, error) {
 		return "", fmt.Errorf("error reading string length: %w", err)
 	}
 
+	if size > MaxStringLength {
+		return "", fmt.Errorf("too big string length: %d", size)
+	}
+
 	// Read 'size' bytes
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(f.r, buf); err != nil {

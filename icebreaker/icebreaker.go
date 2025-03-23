@@ -29,6 +29,22 @@ func NewClient(ctx context.Context, apiRoot string, gameId uint64, accessToken s
 	}
 }
 
+func (c *Client) WriteLogEntryToRemote(_ *applog.LogEntry) error {
+	// TODO: Endpoint to accept log entries on icebreaker side:
+	// 		 see: https://github.com/FAForever/faf-pioneer/issues/10
+	//		 see: https://github.com/FAForever/faf-icebreaker/issues/68
+
+	// TODO: Remote endpoint should check `c.accessToken` to accept logs and
+	//		 have rate-limiting acceptance for each user, other way is to aggregate logs
+	//		 and sent them in chunks.
+
+	// Here we should use `OnlyLocal()` otherwise it will cause stack overflow:
+	// calling debug which is calling remoteWrite, which is again calling debug and remoteWrite.
+	//
+	// applog.OnlyLocal().Debug("Sending remote log entry!")`
+	return nil
+}
+
 func (c *Client) withSessionToken() error {
 	if c.sessionToken != "" {
 		return nil

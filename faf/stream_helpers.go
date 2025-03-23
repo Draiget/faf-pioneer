@@ -1,6 +1,9 @@
 package faf
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 type FieldType byte
 
@@ -11,7 +14,8 @@ const (
 )
 
 const (
-	MaxChunkSize = 10
+	MaxChunkSize    = 10
+	MaxStringLength = math.MaxUint16
 
 	Delimiter = "\b"
 	Tabulator = "/t"

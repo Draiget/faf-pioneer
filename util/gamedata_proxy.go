@@ -12,6 +12,10 @@ import (
 
 var loopbackIpv6Addr = [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 
+const (
+	receiveBufferSize = 1500
+)
+
 type GameUDPProxy struct {
 	ctx                  context.Context
 	ctxCancel            context.CancelFunc
@@ -23,6 +27,8 @@ type GameUDPProxy struct {
 	gameMessagesSent     uint32
 	gameMessagesReceived uint32
 	gameMessagesDropped  uint32
+	gameBytesSent        uint64
+	gameBytesReceived    uint64
 }
 
 func NewGameUDPProxy(
@@ -90,7 +96,7 @@ func (p *GameUDPProxy) Close() {
 }
 
 func (p *GameUDPProxy) receiveLoop() {
-	buffer := make([]byte, 1500)
+	buffer := make([]byte, receiveBufferSize)
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -147,6 +153,7 @@ func (p *GameUDPProxy) receiveLoop() {
 
 			p.dataFromGameChannel <- buffer[:n]
 			p.gameMessagesReceived++
+			p.gameBytesReceived += uint64(n)
 		}
 	}
 }
@@ -173,6 +180,7 @@ func (p *GameUDPProxy) sendLoop() {
 			}
 
 			p.gameMessagesSent++
+			p.gameBytesSent += uint64(len(data))
 		}
 	}
 }

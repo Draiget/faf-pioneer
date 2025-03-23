@@ -2,6 +2,7 @@ package faf
 
 import (
 	"context"
+	"errors"
 	"faf-pioneer/applog"
 	"faf-pioneer/gpgnet"
 	"faf-pioneer/launcher"
@@ -57,6 +58,10 @@ func (s *GpgNetLauncherServer) Listen(
 	for {
 		conn, acceptErr := util.NetAcceptWithContext(s.ctx, listener)
 		if acceptErr != nil {
+			if errors.Is(acceptErr, net.ErrClosed) {
+				return nil
+			}
+
 			if s.ctx.Err() != nil {
 				applog.Debug("Context canceled, stopping accepting launcher server connections")
 				return nil
