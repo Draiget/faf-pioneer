@@ -9,7 +9,6 @@ import (
 	"faf-pioneer/util"
 	"fmt"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"net"
 )
 
@@ -18,7 +17,6 @@ type GpgNetLauncherServer struct {
 	port                 uint
 	tcpListener          net.Listener
 	gameState            gpgnet.GameState
-	loggerFields         []zap.Field
 	info                 *launcher.Info
 	fafClientFromAdapter chan<- gpgnet.Message
 	fafClientToAdapter   chan gpgnet.Message
@@ -49,7 +47,11 @@ func (s *GpgNetLauncherServer) Listen(
 		_ = listener.Close()
 	}(listener)
 
-	applog.Info("Listening GPG-Net launcher server", zap.Uint("port", s.port))
+	s.ctx = applog.AddContextFields(s.ctx,
+		zap.Uint("listenPort", s.port),
+	)
+
+	applog.FromContext(s.ctx).Info("Listening GPG-Net launcher server")
 
 	s.tcpListener = listener
 	s.fafClientToAdapter = fafClientToAdapter
@@ -63,11 +65,16 @@ func (s *GpgNetLauncherServer) Listen(
 			}
 
 			if s.ctx.Err() != nil {
-				applog.Debug("Context canceled, stopping accepting launcher server connections")
+				applog.FromContext(s.ctx).Debug(
+					"Context canceled, stopping accepting launcher server connections",
+				)
 				return nil
 			}
 
-			applog.Error("Failed to accept new GPG-Net adapter connection", zap.Error(err))
+			applog.FromContext(s.ctx).Error(
+				"Failed to accept new GPG-Net adapter connection",
+				zap.Error(acceptErr),
+			)
 			continue
 		}
 
@@ -81,21 +88,20 @@ func (s *GpgNetLauncherServer) Listen(
 }
 
 func (s *GpgNetLauncherServer) acceptConnection(conn net.Conn) *GpgNetLauncherClient {
-	s.loggerFields = []zapcore.Field{
-		zap.Uint("listenPort", s.port),
+	ctx := applog.AddContextFields(
+		s.ctx,
 		zap.String("remoteAddr", conn.RemoteAddr().String()),
-	}
+	)
 
 	client := &GpgNetLauncherClient{
-		ctx:                  s.ctx,
+		ctx:                  ctx,
 		connection:           conn,
 		server:               s,
-		loggerFields:         s.loggerFields,
 		fafClientToAdapter:   s.fafClientToAdapter,
 		fafClientFromAdapter: s.fafClientFromAdapter,
 	}
 
-	applog.Info("Adapter connected to the launcher server", s.loggerFields...)
+	applog.FromContext(ctx).Info("Adapter connected to the launcher server")
 
 	client.listen(conn)
 	return client
@@ -108,9 +114,9 @@ func (s *GpgNetLauncherServer) Close() error {
 
 	err := s.tcpListener.Close()
 	if err != nil {
-		applog.Error(
+		applog.FromContext(s.ctx).Error(
 			"Failed to close launcher server listener",
-			append(s.loggerFields, zap.Error(err))...,
+			zap.Error(err),
 		)
 	}
 

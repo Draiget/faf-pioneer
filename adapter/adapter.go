@@ -24,12 +24,14 @@ type Adapter struct {
 	gameDataToGame      chan *[]byte
 	icebreakerClient    *icebreaker.Client
 	ctx                 context.Context
+	cancel              context.CancelFunc
 	launcherInfo        *launcher.Info
 }
 
-func New(ctx context.Context, info *launcher.Info) *Adapter {
+func New(ctx context.Context, cancel context.CancelFunc, info *launcher.Info) *Adapter {
 	instance := &Adapter{
 		ctx:                 ctx,
+		cancel:              cancel,
 		launcherInfo:        info,
 		gpgNetFromGame:      make(chan gpgnet.Message),
 		gpgNetToGame:        make(chan gpgnet.Message),
@@ -110,7 +112,7 @@ func (a *Adapter) Start() error {
 		iceBreakerEventChannel,
 	)
 
-	gpgNetServer := faf.NewGpgNetServer(a.ctx, peerManager, a.launcherInfo.GpgNetPort)
+	gpgNetServer := faf.NewGpgNetServer(a.ctx, a.cancel, peerManager, a.launcherInfo.GpgNetPort)
 	gpgNetClient := faf.NewGpgNetClient(a.ctx, a.launcherInfo.GpgNetClientPort)
 
 	// Redirect messages from FAF.exe to FAF-Client
@@ -142,15 +144,16 @@ func (a *Adapter) Start() error {
 
 	// Start the GPG-Net control server that acts like a primary bridge between game and this network adapter.
 	go func() {
-		if err := gpgNetServer.Listen(a.gpgNetFromGame, a.gpgNetToGame); err != nil {
+		if err = gpgNetServer.Listen(a.gpgNetFromGame, a.gpgNetToGame); err != nil {
 			applog.Error("Failed to start listening GPG-Net control server connections", zap.Error(err))
 		}
 	}()
 
 	// Start the GPG-Net client that will proxy data from game to FAF-Client.
 	go func() {
-		if err := gpgNetClient.Connect(a.gpgNetToFafClient, a.gpgNetFromFafClient); err != nil {
+		if err = gpgNetClient.Connect(a.gpgNetToFafClient, a.gpgNetFromFafClient); err != nil {
 			applog.Error("Failed to start listening GPG-Net client proxy connections", zap.Error(err))
+			a.cancel()
 		}
 	}()
 

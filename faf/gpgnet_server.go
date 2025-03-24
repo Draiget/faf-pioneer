@@ -10,7 +10,6 @@ import (
 	"faf-pioneer/webrtc"
 	"fmt"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"io"
 	"net"
 	"sync"
@@ -25,10 +24,10 @@ type Peer interface {
 // FAF.exe <--> FAF-Pioneer (ICE-Adapter) <--> FAF-Client.
 type GpgNetServer struct {
 	ctx                     context.Context
+	cancel                  context.CancelFunc
 	peerManager             *webrtc.PeerManager
 	port                    uint
 	tcpListener             net.Listener
-	loggerFields            []zap.Field
 	state                   gpgnet.GameState
 	fromGameChannel         chan<- gpgnet.Message
 	toGameChannel           chan gpgnet.Message
@@ -37,9 +36,15 @@ type GpgNetServer struct {
 	currentConnectionCancel context.CancelFunc
 }
 
-func NewGpgNetServer(context context.Context, peerManager *webrtc.PeerManager, port uint) *GpgNetServer {
+func NewGpgNetServer(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	peerManager *webrtc.PeerManager,
+	port uint,
+) *GpgNetServer {
 	return &GpgNetServer{
-		ctx:         context,
+		ctx:         ctx,
+		cancel:      cancel,
 		peerManager: peerManager,
 		port:        port,
 		state:       gpgnet.GameStateNone,
@@ -60,7 +65,11 @@ func (s *GpgNetServer) Listen(
 		_ = listener.Close()
 	}(listener)
 
-	applog.Info("Listening GPG-Net control server", zap.Uint("listenPort", s.port))
+	s.ctx = applog.AddContextFields(s.ctx,
+		zap.Uint("listenPort", s.port),
+	)
+
+	applog.FromContext(s.ctx).Info("Listening GPG-Net control server")
 
 	s.tcpListener = listener
 	s.fromGameChannel = fromGameChannel
@@ -70,11 +79,11 @@ func (s *GpgNetServer) Listen(
 		conn, acceptErr := util.NetAcceptWithContext(s.ctx, listener)
 		if acceptErr != nil {
 			if s.ctx.Err() != nil {
-				applog.Debug("Context canceled, stopping accepting game connections")
+				applog.FromContext(s.ctx).Debug("Context canceled, stopping accepting game connections")
 				return nil
 			}
 
-			applog.Error("Failed to accept new GPG-Net game connection", zap.Error(err))
+			applog.FromContext(s.ctx).Error("Failed to accept new GPG-Net game connection", zap.Error(err))
 			continue
 		}
 
@@ -91,12 +100,11 @@ func (s *GpgNetServer) acceptConnection(conn net.Conn) {
 	clientCtx, cancel := context.WithCancel(s.ctx)
 	s.currentConnectionCancel = cancel
 
-	s.loggerFields = []zapcore.Field{
-		zap.Uint("listenPort", s.port),
+	clientCtx = applog.AddContextFields(clientCtx,
 		zap.String("remoteAddr", conn.RemoteAddr().String()),
-	}
+	)
 
-	applog.Info("New GPG-Net client (game) connected", s.loggerFields...)
+	applog.FromContext(clientCtx).Info("New GPG-Net client (game) connected")
 
 	// Wrap the connection in a buffered reader.
 	bufferReader := bufio.NewReader(conn)
@@ -111,25 +119,22 @@ func (s *GpgNetServer) acceptConnection(conn net.Conn) {
 }
 
 func (s *GpgNetServer) handleFromGame(ctx context.Context, stream *StreamReader) {
-	applog.Info("Waiting for incoming GPG-Net messages from game", s.loggerFields...)
+	applog.FromContext(ctx).Info("Waiting for incoming GPG-Net messages from game")
 
 	// Read one message from the connection, process it and continue reading.
 	for {
 		// First, read length-prefixed string from the stream to determine chunks size.
 		command, err := stream.ReadString()
 		if errors.Is(err, io.EOF) {
-			applog.Info(
-				"Closing GPG-Net connection from game (EOF reached)",
-				s.loggerFields...,
-			)
+			applog.FromContext(ctx).Info("Closing GPG-Net connection from game (EOF reached)")
 			_ = s.closeCurrentConnection()
 			return
 		}
 
 		if err != nil {
-			applog.Error(
+			applog.FromContext(ctx).Error(
 				"Error parsing GPG-Net command from game, closing connection",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
 			_ = s.closeCurrentConnection()
 			return
@@ -137,7 +142,7 @@ func (s *GpgNetServer) handleFromGame(ctx context.Context, stream *StreamReader)
 
 		select {
 		case <-ctx.Done():
-			applog.Debug("Context canceled in handleFromGame, stopping read loop", s.loggerFields...)
+			applog.FromContext(ctx).Debug("Context canceled in handleFromGame, stopping read loop")
 			_ = s.closeCurrentConnection()
 			return
 		default:
@@ -146,17 +151,14 @@ func (s *GpgNetServer) handleFromGame(ctx context.Context, stream *StreamReader)
 		// Then, read the "chunks" (actual message data).
 		chunks, err := stream.ReadChunks()
 		if errors.Is(err, io.EOF) {
-			applog.Info(
-				"Closing GPG-Net connection from game (EOF reached)",
-				s.loggerFields...,
-			)
+			applog.FromContext(ctx).Info("Closing GPG-Net connection from game (EOF reached)")
 			_ = s.closeCurrentConnection()
 			return
 		}
 		if err != nil {
-			applog.Error(
+			applog.FromContext(ctx).Error(
 				"Error parsing GPG-Net command chunks from game, closing connection",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
 			_ = s.closeCurrentConnection()
 			return
@@ -164,7 +166,7 @@ func (s *GpgNetServer) handleFromGame(ctx context.Context, stream *StreamReader)
 
 		select {
 		case <-ctx.Done():
-			applog.Debug("Context canceled in handleFromGame, stopping read loop", s.loggerFields...)
+			applog.FromContext(ctx).Debug("Context canceled in handleFromGame, stopping read loop")
 			_ = s.closeCurrentConnection()
 			return
 		default:
@@ -178,9 +180,9 @@ func (s *GpgNetServer) handleFromGame(ctx context.Context, stream *StreamReader)
 		// Try to parse GPG-Net message based on the command type/name.
 		parsedMsg, err := unparsedMsg.TryParse()
 		if err != nil {
-			applog.Error(
+			applog.FromContext(ctx).Error(
 				"Failed to parse GPG-Net message from game",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
 		}
 
@@ -193,53 +195,39 @@ func (s *GpgNetServer) handleFromGame(ctx context.Context, stream *StreamReader)
 }
 
 func (s *GpgNetServer) handleToGame(ctx context.Context, stream *StreamWriter) {
-	applog.Info(
-		"Waiting for GPG-Net messages to be forwarded to the game",
-		s.loggerFields...,
-	)
+	applog.FromContext(ctx).Info("Waiting for GPG-Net messages to be forwarded to the game")
 
 	for {
 		select {
 		case msg, ok := <-s.toGameChannel:
 			if !ok {
-				applog.Debug(
-					"Channel (toGameChannel) closed, GpgNetServer::handleToGame aborted",
-					s.loggerFields...,
-				)
+				applog.FromContext(ctx).Debug("Channel (toGameChannel) closed, GpgNetServer::handleToGame aborted")
 				_ = s.closeCurrentConnection()
 				return
 			}
 
-			applog.Debug(
-				fmt.Sprintf(
-					"Forwarding GPG-Net message '%s' in server from (toGameChannel) to the game",
-					msg.GetCommand()),
-				s.loggerFields...,
+			applog.FromContext(ctx).Debug(fmt.Sprintf(
+				"Forwarding GPG-Net message '%s' in server from (toGameChannel) to the game",
+				msg.GetCommand()),
 			)
 
 			err := stream.WriteMessage(msg)
 			if errors.Is(err, net.ErrClosed) {
-				applog.Error(
+				applog.FromContext(ctx).Error(
 					"Failed to write GPG-Net message to the game, connection was closed",
-					append(s.loggerFields, zap.Error(err))...,
+					zap.Error(err),
 				)
 				_ = s.closeCurrentConnection()
 				return
 			}
 
 			if err != nil {
-				applog.Error(
-					"Failed to write GPG-Net message to game",
-					append(s.loggerFields, zap.Error(err))...,
-				)
+				applog.FromContext(ctx).Error("Failed to write GPG-Net message to game", zap.Error(err))
 				_ = s.closeCurrentConnection()
 				return
 			}
 			if err = stream.w.Flush(); err != nil {
-				applog.Error(
-					"Failed to flush GPG-Net message to game",
-					append(s.loggerFields, zap.Error(err))...,
-				)
+				applog.FromContext(ctx).Error("Failed to flush GPG-Net message to game", zap.Error(err))
 				_ = s.closeCurrentConnection()
 				return
 			}
@@ -254,17 +242,19 @@ func (s *GpgNetServer) handleToGame(ctx context.Context, stream *StreamWriter) {
 }
 
 func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message {
-	applog.Debug("Processing message",
+	applog.FromContext(s.ctx).Debug(
+		"Processing message",
 		zap.String("command", rawMessage.GetCommand()),
-		zap.String("rawMessageType", fmt.Sprintf("%T", rawMessage)))
+		zap.String("rawMessageType", fmt.Sprintf("%T", rawMessage)),
+	)
 
 	switch msg := rawMessage.(type) {
 	case *gpgnet.CreateLobbyMessage:
 		targetPort := s.peerManager.GetGameUdpPort()
 
-		applog.Info(
+		applog.FromContext(s.ctx).Info(
 			"Received create lobby message, swapping lobby port",
-			append(s.loggerFields, zap.Uint("targetPort", targetPort))...,
+			zap.Uint("targetPort", targetPort),
 		)
 
 		return gpgnet.NewCreateLobbyMessage(
@@ -274,9 +264,9 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 			msg.LocalPlayerId,
 		)
 	case *gpgnet.GameStateMessage:
-		applog.Info(
+		applog.FromContext(s.ctx).Info(
 			"Local game gameState changed",
-			append(s.loggerFields, zap.String("gameState", msg.State))...,
+			zap.String("gameState", msg.State),
 		)
 
 		s.state = msg.State
@@ -284,7 +274,7 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 	case *gpgnet.JoinGameMessage:
 		peer := s.peerManager.AddPeerIfMissing(uint(msg.RemotePlayerId))
 
-		applog.Info(
+		applog.FromContext(s.ctx).Info(
 			"Joining game (swapping the address/port)",
 			zap.Uint("targetPort", peer.GetUdpPort()),
 		)
@@ -297,7 +287,7 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 	case *gpgnet.ConnectToPeerMessage:
 		peer := s.peerManager.AddPeerIfMissing(uint(msg.RemotePlayerId))
 
-		applog.Info(
+		applog.FromContext(s.ctx).Info(
 			"Connecting to peer (swapping the address/port)",
 			zap.Uint("targetPort", peer.GetUdpPort()),
 		)
@@ -308,8 +298,8 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 			fmt.Sprintf("127.0.0.1:%d", peer.GetUdpPort()),
 		)
 	case *gpgnet.DisconnectFromPeerMessage:
-		applog.Info("Disconnecting from peer and disabling it from reconnects",
-			append(s.loggerFields, zap.Int32("peerId", msg.RemotePlayerId))...,
+		applog.FromContext(s.ctx).Info("Disconnecting from peer and disabling it from reconnects",
+			zap.Int32("peerId", msg.RemotePlayerId),
 		)
 
 		if peer := s.peerManager.GetPeerById(uint(msg.RemotePlayerId)); peer != nil {
@@ -317,7 +307,7 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 		}
 		break
 	case *gpgnet.GameEndedMessage:
-		applog.Info("Game is ended, disabling/disconnecting all peers")
+		applog.FromContext(s.ctx).Info("Game is ended, disabling/disconnecting all peers")
 		for _, peerId := range s.peerManager.GetAllPeerIds() {
 			if peer := s.peerManager.GetPeerById(peerId); peer != nil {
 				peer.Disable()
@@ -325,9 +315,9 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 		}
 		break
 	default:
-		applog.Debug(
+		applog.FromContext(s.ctx).Debug(
 			"Message command ignored",
-			append(s.loggerFields, zap.String("command", msg.GetCommand()))...,
+			zap.String("command", msg.GetCommand()),
 		)
 	}
 
@@ -337,7 +327,17 @@ func (s *GpgNetServer) ProcessMessage(rawMessage gpgnet.Message) gpgnet.Message 
 func (s *GpgNetServer) closeCurrentConnection() error {
 	s.currentConnectionMu.Lock()
 	defer s.currentConnectionMu.Unlock()
+	if s.currentConnection != nil {
+		s.handleGameConnectionLost()
+	}
+	s.currentConnection = nil
 	return nil
+}
+
+func (s *GpgNetServer) handleGameConnectionLost() {
+	applog.FromContext(s.ctx).Info("Game connection has been lost, canceling context")
+	s.peerManager.HandleGameDisconnected()
+	s.cancel()
 }
 
 func (s *GpgNetServer) Close() error {
@@ -367,11 +367,11 @@ func (s *GpgNetServer) Close() error {
 
 		select {
 		case <-done:
-			applog.Debug("Sent DisconnectFromPeerMessage to all peers, exiting",
-				s.loggerFields...)
+			applog.FromContext(s.ctx).Debug(
+				"Sent DisconnectFromPeerMessage to all peers, exiting")
 		case <-time.After(5 * time.Second):
-			applog.Debug("Could not sent DisconnectFromPeerMessage to all peers, timed out, exiting",
-				s.loggerFields...)
+			applog.FromContext(s.ctx).Debug(
+				"Could not sent DisconnectFromPeerMessage to all peers, timed out, exiting")
 		}
 	}
 

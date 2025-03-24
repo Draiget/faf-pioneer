@@ -97,6 +97,7 @@ func (p *PeerManager) Start() {
 
 			p.handleIceBreakerEvent(msg)
 		case <-p.ctx.Done():
+			applog.Debug("Peer manager exited, context canceled")
 			return
 		}
 	}
@@ -374,5 +375,11 @@ func (p *PeerManager) onPeerCandidatesGathered(remotePeer uint) onPeerCandidates
 				zap.Error(err),
 			)
 		}
+	}
+}
+
+func (p *PeerManager) HandleGameDisconnected() {
+	for _, peer := range p.peers {
+		_ = peer.Close()
 	}
 }

@@ -9,10 +9,11 @@ import (
 )
 
 type asyncSink struct {
-	core      zapcore.Core
-	entryChan chan *LogEntry
-	quit      chan struct{}
-	wg        *sync.WaitGroup
+	core        zapcore.Core
+	entryChan   chan *LogEntry
+	quit        chan struct{}
+	wg          *sync.WaitGroup
+	extraFields []zap.Field
 }
 
 func newAsyncSink(core zapcore.Core, bufferSize int) *asyncSink {
@@ -46,7 +47,8 @@ func (s *asyncSink) process() {
 					if entry.Entry == nil {
 						continue
 					}
-					_ = s.core.Write(*entry.Entry, nil)
+
+					_ = s.core.Write(*entry.Entry, entry.Fields)
 				default:
 					return
 				}
@@ -60,9 +62,12 @@ func (s *asyncSink) Sync() error {
 }
 
 func (s *asyncSink) Write(entry zapcore.Entry, fields []zap.Field) error {
+	newFields := make([]zap.Field, 0, len(s.extraFields)+len(fields))
+	newFields = append(newFields, s.extraFields...)
+	newFields = append(newFields, fields...)
 	logEntry := &LogEntry{
 		Entry:  &entry,
-		Fields: fields,
+		Fields: newFields,
 	}
 
 	select {
@@ -78,11 +83,15 @@ func (s *asyncSink) Enabled(lvl zapcore.Level) bool {
 }
 
 func (s *asyncSink) With(fields []zap.Field) zapcore.Core {
+	newFields := make([]zap.Field, 0, len(s.extraFields)+len(fields))
+	newFields = append(newFields, s.extraFields...)
+	newFields = append(newFields, fields...)
 	return &asyncSink{
-		core:      s.core.With(fields),
-		entryChan: s.entryChan,
-		quit:      s.quit,
-		wg:        s.wg,
+		core:        s.core.With(fields),
+		entryChan:   s.entryChan,
+		quit:        s.quit,
+		wg:          s.wg,
+		extraFields: newFields,
 	}
 }
 

@@ -17,7 +17,6 @@ type GpgNetLauncherClient struct {
 	connection           net.Conn
 	connCancel           context.CancelFunc
 	server               *GpgNetLauncherServer
-	loggerFields         []zap.Field
 	fafClientFromAdapter chan<- gpgnet.Message
 	fafClientToAdapter   chan gpgnet.Message
 }
@@ -39,34 +38,28 @@ func (s *GpgNetLauncherClient) listen(conn net.Conn) {
 }
 
 func (s *GpgNetLauncherClient) handleFromAdapter(ctx context.Context, stream *StreamReader) {
-	applog.Info("Waiting for incoming GPG-Net messages from adapter", s.loggerFields...)
+	applog.FromContext(s.ctx).Info("Waiting for incoming GPG-Net messages from adapter")
 
 	// Read one message from the connection, process it and continue reading.
 	for {
 		// First, read length-prefixed string from the stream to determine chunks size.
 		command, err := stream.ReadString()
 		if errors.Is(err, net.ErrClosed) {
-			applog.Info(
-				"Closing GPG-Net connection from adapter (remotely closed)",
-				s.loggerFields...,
-			)
+			applog.FromContext(s.ctx).Info("Closing GPG-Net connection from adapter (remotely closed)")
 			_ = s.Close()
 			return
 		}
 
 		if errors.Is(err, io.EOF) {
-			applog.Info(
-				"Closing GPG-Net connection from adapter (EOF reached)",
-				s.loggerFields...,
-			)
+			applog.FromContext(s.ctx).Info("Closing GPG-Net connection from adapter (EOF reached)")
 			_ = s.Close()
 			return
 		}
 
 		if err != nil {
-			applog.Error(
+			applog.FromContext(s.ctx).Error(
 				"Error parsing GPG-Net command from adapter, closing connection",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
 			_ = s.Close()
 			return
@@ -74,7 +67,7 @@ func (s *GpgNetLauncherClient) handleFromAdapter(ctx context.Context, stream *St
 
 		select {
 		case <-ctx.Done():
-			applog.Debug("Context canceled in handleFromAdapter, stopping read loop", s.loggerFields...)
+			applog.FromContext(s.ctx).Debug("Context canceled in handleFromAdapter, stopping read loop")
 			_ = s.Close()
 			return
 		default:
@@ -83,17 +76,14 @@ func (s *GpgNetLauncherClient) handleFromAdapter(ctx context.Context, stream *St
 		// Then, read the "chunks" (actual message data).
 		chunks, err := stream.ReadChunks()
 		if errors.Is(err, io.EOF) {
-			applog.Info(
-				"Closing GPG-Net connection from adapter (EOF reached)",
-				s.loggerFields...,
-			)
+			applog.FromContext(s.ctx).Info("Closing GPG-Net connection from adapter (EOF reached)")
 			_ = s.Close()
 			return
 		}
 		if err != nil {
-			applog.Error(
+			applog.FromContext(s.ctx).Error(
 				"Error parsing GPG-Net command chunks from adapter, closing connection",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
 			_ = s.Close()
 			return
@@ -101,7 +91,7 @@ func (s *GpgNetLauncherClient) handleFromAdapter(ctx context.Context, stream *St
 
 		select {
 		case <-ctx.Done():
-			applog.Debug("Context canceled in handleFromAdapter, stopping read loop", s.loggerFields...)
+			applog.FromContext(s.ctx).Debug("Context canceled in handleFromAdapter, stopping read loop")
 			_ = s.Close()
 			return
 		default:
@@ -115,9 +105,9 @@ func (s *GpgNetLauncherClient) handleFromAdapter(ctx context.Context, stream *St
 		// Try to parse GPG-Net message based on the command type/name.
 		parsedMsg, err := unparsedMsg.TryParse()
 		if err != nil {
-			applog.Error(
+			applog.FromContext(s.ctx).Error(
 				"Failed to parse GPG-Net message from adapter",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
 			// TODO: Forward unparsed?
 		}
@@ -131,51 +121,39 @@ func (s *GpgNetLauncherClient) handleFromAdapter(ctx context.Context, stream *St
 }
 
 func (s *GpgNetLauncherClient) handleToAdapter(ctx context.Context, stream *StreamWriter) {
-	applog.Info(
-		"Waiting for GPG-Net messages from game to be forwarded to the adapter",
-		s.loggerFields...,
-	)
+	applog.FromContext(s.ctx).Info("Waiting for GPG-Net messages from game to be forwarded to the adapter")
 
 	for {
 		select {
 		case msg, ok := <-s.fafClientToAdapter:
 			if !ok {
-				applog.Debug(
+				applog.FromContext(s.ctx).Debug(
 					"Channel (fafClientToAdapter) closed, GpgNetLauncherClient::handleToAdapter aborted",
-					s.loggerFields...,
 				)
 				_ = s.Close()
 				return
 			}
 
-			applog.Debug(
-				fmt.Sprintf(
-					"Forwarding GPG-Net message '%s' in launcher client from (fafClientToAdapter) to the adapter",
-					msg.GetCommand()),
-				s.loggerFields...,
+			applog.FromContext(s.ctx).Debug(fmt.Sprintf(
+				"Forwarding GPG-Net message '%s' in launcher client from (fafClientToAdapter) to the adapter",
+				msg.GetCommand()),
 			)
 
 			err := stream.WriteMessage(msg)
 			if errors.Is(err, net.ErrClosed) {
-				applog.Error(
+				applog.FromContext(s.ctx).Error(
 					"Failed to write GPG-Net message to the adapter, connection was closed",
-					append(s.loggerFields, zap.Error(err))...,
+					zap.Error(err),
 				)
 				_ = s.Close()
 				return
 			}
 
 			if err != nil {
-				applog.Error(
-					"Failed to write GPG-Net message to the adapter",
-					append(s.loggerFields, zap.Error(err))...,
-				)
+				applog.FromContext(s.ctx).Error("Failed to write GPG-Net message to the adapter", zap.Error(err))
 			}
 			if err = stream.w.Flush(); err != nil {
-				applog.Error(
-					"Failed to flush GPG-Net message to game",
-					append(s.loggerFields, zap.Error(err))...,
-				)
+				applog.FromContext(s.ctx).Error("Failed to flush GPG-Net message to game", zap.Error(err))
 			}
 		case <-ctx.Done():
 			return
@@ -186,9 +164,9 @@ func (s *GpgNetLauncherClient) handleToAdapter(ctx context.Context, stream *Stre
 func (s *GpgNetLauncherClient) processMessage(rawMessage gpgnet.Message) gpgnet.Message {
 	switch msg := rawMessage.(type) {
 	case *gpgnet.GameStateMessage:
-		applog.Info(
-			"Received game gameState changed",
-			append(s.loggerFields, zap.String("gameState", msg.State))...,
+		applog.FromContext(s.ctx).Info(
+			"Game state has been changed",
+			zap.String("gameState", msg.State),
 		)
 
 		s.server.setGameState(msg.State)
@@ -209,15 +187,12 @@ func (s *GpgNetLauncherClient) processMessage(rawMessage gpgnet.Message) gpgnet.
 
 		break
 	case *gpgnet.GameFullMessage:
-		applog.Info(
-			"Received GameFullMessage",
-			s.loggerFields...,
-		)
+		applog.FromContext(s.ctx).Info("Received GameFullMessage")
 		break
 	default:
-		applog.Debug(
+		applog.FromContext(s.ctx).Debug(
 			"Message command ignored",
-			append(s.loggerFields, zap.String("command", msg.GetCommand()))...,
+			zap.String("command", msg.GetCommand()),
 		)
 	}
 

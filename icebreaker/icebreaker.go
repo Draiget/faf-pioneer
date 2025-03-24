@@ -41,7 +41,7 @@ func (c *Client) WriteLogEntryToRemote(_ []*applog.LogEntry) error {
 	// Here we should use `OnlyLocal()` otherwise it will cause stack overflow:
 	// calling debug which is calling remoteWrite, which is again calling debug and remoteWrite.
 	//
-	// applog.OnlyLocal().Debug("Sending remote log entry!")`
+	// `applog.NoRemote().Debug("Sending remote log entry!")`
 	return nil
 }
 

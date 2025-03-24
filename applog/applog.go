@@ -78,7 +78,7 @@ func Info(msg string, fields ...zapcore.Field) {
 }
 
 func Warn(msg string, fields ...zapcore.Field) {
-	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.DebugLevel, msg)
+	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.WarnLevel, msg)
 	if entry == nil {
 		return
 	}
@@ -87,7 +87,7 @@ func Warn(msg string, fields ...zapcore.Field) {
 }
 
 func Debug(msg string, fields ...zapcore.Field) {
-	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.WarnLevel, msg)
+	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.DebugLevel, msg)
 	if entry == nil {
 		return
 	}
@@ -142,7 +142,7 @@ func NoRemote() *zap.Logger {
 	return noRemoteLogger
 }
 
-func LogStartup(launchArgs interface{}) {
+func LogStartupInfo(launchArgs interface{}) {
 	buildInfo := build.GetBuildInfo()
 	buildCommit := "unknown"
 	if buildInfo != nil {
@@ -155,7 +155,7 @@ func LogStartup(launchArgs interface{}) {
 	)
 }
 
-func Initialize(userId uint, gameId uint64, rawLogLevel uint) {
+func Initialize(userId uint, gameId uint64, rawLogLevel int) {
 	workdir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("Failed to get current working directory: %v", err)
@@ -183,11 +183,9 @@ func Initialize(userId uint, gameId uint64, rawLogLevel uint) {
 	encoderConfig := getEncoderConfig()
 	logLevel := safeGetLogLevelOrDefault(rawLogLevel)
 
-	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
-	stdoutCore = zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), logLevel)
-
-	fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
-	fileCore = zapcore.NewCore(fileEncoder, zapcore.AddSync(logFile), logLevel)
+	jsonEncoder := zapcore.NewJSONEncoder(encoderConfig)
+	stdoutCore = zapcore.NewCore(jsonEncoder, zapcore.AddSync(os.Stdout), logLevel)
+	fileCore = zapcore.NewCore(jsonEncoder, zapcore.AddSync(logFile), logLevel)
 
 	stdoutAsync := newAsyncSink(stdoutCore, asyncSinkMaxLogEntriesBufferSize)
 	fileAsync := newAsyncSink(fileCore, asyncSinkMaxLogEntriesBufferSize)
@@ -249,9 +247,9 @@ func Shutdown() {
 	}
 }
 
-func safeGetLogLevelOrDefault(level uint) zapcore.Level {
+func safeGetLogLevelOrDefault(level int) zapcore.Level {
 	converted := zapcore.Level(level)
-	if converted <= zapcore.DebugLevel || converted >= zapcore.InvalidLevel {
+	if converted < zapcore.DebugLevel || converted >= zapcore.InvalidLevel {
 		return zapcore.InfoLevel
 	}
 
@@ -261,7 +259,7 @@ func safeGetLogLevelOrDefault(level uint) zapcore.Level {
 func getEncoderConfig() zapcore.EncoderConfig {
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.TimeKey = "time"
-	encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	encoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
 	encoderConfig.EncodeDuration = zapcore.StringDurationEncoder
 	encoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 		// Use UTC timezone for logs.

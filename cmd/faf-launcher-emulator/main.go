@@ -22,7 +22,7 @@ func main() {
 	defer cancel()
 
 	info := launcher.NewInfoFromFlags()
-	applog.Initialize(info.UserId, info.GameId)
+	applog.Initialize(info.UserId, info.GameId, info.LogLevel)
 	defer applog.Shutdown()
 	defer util.WrapAppContextCancelExitMessage(ctx, "Launcher-emulator")
 
@@ -31,7 +31,7 @@ func main() {
 		return
 	}
 
-	applog.LogStartup(info)
+	applog.LogStartupInfo(info)
 
 	// Client starts an own GPG-Net server that used to communicate between FAF-Client and FAF.exe.
 	// So for that we need to create GpgNetServer and start listening on gpgNetClientPort.
@@ -52,6 +52,7 @@ func main() {
 		// so we can do graceful shutdown for launcher emulator process.
 		go func() {
 			_ = fafProcess.cmd.Wait()
+			applog.Info("Game process had been exited, canceling context")
 			cancel()
 		}()
 	}

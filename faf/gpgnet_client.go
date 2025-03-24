@@ -8,7 +8,6 @@ import (
 	"faf-pioneer/gpgnet"
 	"fmt"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"io"
 	"net"
 )
@@ -18,20 +17,22 @@ import (
 // Only used for emulation purposes.
 type GpgNetClient struct {
 	ctx                  context.Context
+	cancel               context.CancelFunc
 	connection           net.Conn
 	server               *GpgNetServer
-	loggerFields         []zapcore.Field
 	port                 uint
 	state                gpgnet.GameState
 	toFafClientChannel   chan gpgnet.Message
 	fromFafClientChannel chan gpgnet.Message
 }
 
-func NewGpgNetClient(context context.Context, port uint) *GpgNetClient {
+func NewGpgNetClient(parentContext context.Context, port uint) *GpgNetClient {
+	ctx, cancel := context.WithCancel(parentContext)
 	return &GpgNetClient{
-		ctx:   context,
-		port:  port,
-		state: "disconnected",
+		ctx:    ctx,
+		cancel: cancel,
+		port:   port,
+		state:  "disconnected",
 	}
 }
 
@@ -41,13 +42,13 @@ func (s *GpgNetClient) Connect(toFafClientChannel chan gpgnet.Message, fromFafCl
 		return err
 	}
 
-	s.loggerFields = []zapcore.Field{
-		zap.String("listenPort", fmt.Sprintf("%d", s.port)),
-	}
+	s.ctx = applog.AddContextFields(
+		s.ctx,
+		zap.String("launcherPort", fmt.Sprintf("%d", s.port)),
+	)
 
-	applog.Info(
-		fmt.Sprintf("GPG-Net client connected to parent GpgNetServer"),
-		s.loggerFields...,
+	applog.FromContext(s.ctx).Info(
+		fmt.Sprintf("GPG-Net client connected to parent GpgNetServer (FAF-Client)"),
 	)
 
 	// Channel `fromFafClientChannel` is being redirected to `gpgNetToGame`
@@ -77,45 +78,54 @@ func (s *GpgNetClient) Connect(toFafClientChannel chan gpgnet.Message, fromFafCl
 }
 
 func (s *GpgNetClient) handleFromClient(stream *StreamReader) {
-	applog.Info(
+	applog.FromContext(s.ctx).Info(
 		"Waiting for incoming GPG-Net messages from FAF-Client",
-		s.loggerFields...,
 	)
 
 	// Read one message from the connection, process it and continue reading.
 	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+
 		// First, read length-prefixed string from the stream to determine chunks size.
 		command, err := stream.ReadString()
 		if errors.Is(err, io.EOF) {
-			applog.Info(
+			applog.FromContext(s.ctx).Info(
 				"Closing GPG-Net connection from FAF-Client (EOF reached)",
-				s.loggerFields...,
+				zap.Error(err),
 			)
+			s.closeCurrentConnection()
 			return
 		}
 
 		if err != nil {
-			applog.Error(
+			applog.FromContext(s.ctx).Error(
 				"Error reading GPG-Net command from FAF-Client, closing connection",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
+			s.closeCurrentConnection()
 			return
 		}
 
 		// Then, read the "chunks" (actual message data).
 		chunks, err := stream.ReadChunks()
 		if errors.Is(err, io.EOF) {
-			applog.Info(
+			applog.FromContext(s.ctx).Info(
 				"Closing GPG-Net connection from FAF-Client (EOF reached)",
-				s.loggerFields...,
+				zap.Error(err),
 			)
+			s.closeCurrentConnection()
 			return
 		}
 		if err != nil {
-			applog.Error(
+			applog.FromContext(s.ctx).Error(
 				"Error reading GPG-Net command chunks from FAF-Client, closing connection",
-				append(s.loggerFields, zap.Error(err))...,
+				zap.Error(err),
 			)
+			s.closeCurrentConnection()
 			return
 		}
 
@@ -133,39 +143,37 @@ func (s *GpgNetClient) handleFromClient(stream *StreamReader) {
 }
 
 func (s *GpgNetClient) handleToClient(stream *StreamWriter) {
-	applog.Info(
+	applog.FromContext(s.ctx).Info(
 		"Waiting for GPG-Net messages to be forwarded to the FAF-Client",
-		s.loggerFields...,
 	)
 
 	for {
 		select {
 		case msg, ok := <-s.toFafClientChannel:
 			if !ok {
-				applog.Debug(
+				applog.FromContext(s.ctx).Debug(
 					"Channel (toFafClientChannel) closed, GpgNetClient::handleToClient aborted",
-					s.loggerFields...,
 				)
+				s.closeCurrentConnection()
 				return
 			}
 
-			applog.Debug(
+			applog.FromContext(s.ctx).Debug(
 				fmt.Sprintf("Forwarding GPG-Net message '%s' from game (toFafClientChannel) to FAF-Client",
 					msg.GetCommand()),
-				s.loggerFields...,
 			)
 
 			err := stream.WriteMessage(msg)
 			if err != nil {
-				applog.Error(
+				applog.FromContext(s.ctx).Error(
 					"Failed to write GPG-Net message to the FAF-Client",
-					append(s.loggerFields, zap.Error(err))...,
+					zap.Error(err),
 				)
 			}
 			if err = stream.w.Flush(); err != nil {
-				applog.Error(
+				applog.FromContext(s.ctx).Error(
 					"Failed to flush GPG-Net message to the FAF-Client",
-					append(s.loggerFields, zap.Error(err))...,
+					zap.Error(err),
 				)
 			}
 		case <-s.ctx.Done():
@@ -174,12 +182,16 @@ func (s *GpgNetClient) handleToClient(stream *StreamWriter) {
 	}
 }
 
+func (s *GpgNetClient) closeCurrentConnection() {
+	s.cancel()
+}
+
 func (s *GpgNetClient) Close() {
 	err := s.connection.Close()
 	if err != nil {
-		applog.Error(
+		applog.FromContext(s.ctx).Error(
 			"Error on closing client connection to parent GPG-Net server",
-			append(s.loggerFields, zap.Error(err))...,
+			zap.Error(err),
 		)
 		return
 	}
