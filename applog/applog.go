@@ -68,6 +68,9 @@ var (
 )
 
 func Info(msg string, fields ...zapcore.Field) {
+	if atomic.LoadInt32(&acceptingLogs) == 0 {
+		return
+	}
 	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.InfoLevel, msg)
 	if entry == nil {
 		return
@@ -78,6 +81,9 @@ func Info(msg string, fields ...zapcore.Field) {
 }
 
 func Warn(msg string, fields ...zapcore.Field) {
+	if atomic.LoadInt32(&acceptingLogs) == 0 {
+		return
+	}
 	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.WarnLevel, msg)
 	if entry == nil {
 		return
@@ -87,6 +93,9 @@ func Warn(msg string, fields ...zapcore.Field) {
 }
 
 func Debug(msg string, fields ...zapcore.Field) {
+	if atomic.LoadInt32(&acceptingLogs) == 0 {
+		return
+	}
 	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.DebugLevel, msg)
 	if entry == nil {
 		return
@@ -96,6 +105,9 @@ func Debug(msg string, fields ...zapcore.Field) {
 }
 
 func Error(msg string, fields ...zapcore.Field) {
+	if atomic.LoadInt32(&acceptingLogs) == 0 {
+		return
+	}
 	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.ErrorLevel, msg)
 	if entry == nil {
 		return
@@ -105,6 +117,9 @@ func Error(msg string, fields ...zapcore.Field) {
 }
 
 func Fatal(msg string, fields ...zapcore.Field) {
+	if atomic.LoadInt32(&acceptingLogs) == 0 {
+		return
+	}
 	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.FatalLevel, msg)
 	if entry == nil {
 		return
@@ -270,6 +285,9 @@ func getEncoderConfig() zapcore.EncoderConfig {
 }
 
 func setLogger(instance *Logger) {
+	if instance == nil {
+		return
+	}
 	globalLogger = instance
 	zap.ReplaceGlobals(globalLogger)
 }

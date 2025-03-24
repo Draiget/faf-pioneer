@@ -14,6 +14,7 @@ type asyncSink struct {
 	quit        chan struct{}
 	wg          *sync.WaitGroup
 	extraFields []zap.Field
+	once        sync.Once
 }
 
 func newAsyncSink(core zapcore.Core, bufferSize int) *asyncSink {
@@ -103,7 +104,9 @@ func (s *asyncSink) Check(entry zapcore.Entry, ce *zapcore.CheckedEntry) *zapcor
 }
 
 func (s *asyncSink) Shutdown(timeout time.Duration) {
-	close(s.quit)
+	s.once.Do(func() {
+		close(s.quit)
+	})
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
