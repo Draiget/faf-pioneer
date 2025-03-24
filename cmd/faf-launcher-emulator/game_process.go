@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"faf-pioneer/applog"
 	"faf-pioneer/launcher"
 	"fmt"
+	"go.uber.org/zap"
 	"os"
 	"os/exec"
 	"path"
@@ -21,9 +23,8 @@ type GameProcess struct {
 func NewGameProcess(ctx context.Context, info *launcher.Info) *GameProcess {
 	programDataPath := os.Getenv("ProgramData")
 	gp := &GameProcess{
-		ctx:         ctx,
-		rootPath:    path.Join(programDataPath, "FAForever"),
-		logFilePath: path.Join(programDataPath, "ForgedAlliance.log"),
+		ctx:      ctx,
+		rootPath: path.Join(programDataPath, "FAForever"),
 	}
 
 	gp.exePath = path.Join(gp.rootPath, "bin", "ForgedAlliance.exe")
@@ -36,9 +37,10 @@ func NewGameProcess(ctx context.Context, info *launcher.Info) *GameProcess {
 		"/nobugreport",
 		"/gpgnet", fmt.Sprintf("127.0.0.1:%d", info.GpgNetPort),
 		"/numgames", "1",
-		"/log", fmt.Sprintf("\"%s\"", gp.logFilePath),
+		"/log", gp.logFilePath,
 	)
 
+	applog.Debug("Game has started", zap.Strings("args", gp.cmd.Args))
 	return gp
 }
 

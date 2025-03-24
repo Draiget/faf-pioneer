@@ -94,7 +94,7 @@ func CreatePeer(
 ) (*Peer, error) {
 	var err error
 
-	ctx := applog.AddFields(parentContext,
+	ctx := applog.AddContextFields(parentContext,
 		zap.Uint("remotePlayerId", peerId),
 		zap.Bool("localOfferer", offerer),
 		zap.Uint("gameToWebrtcPort", gameToWebrtcPort),

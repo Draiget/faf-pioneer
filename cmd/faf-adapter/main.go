@@ -16,7 +16,7 @@ func main() {
 	defer cancel()
 
 	info := launcher.NewInfoFromFlags()
-	applog.Initialize(info.UserId, info.GameId)
+	applog.Initialize(info.UserId, info.GameId, info.LogLevel)
 	defer applog.Shutdown()
 	defer util.WrapAppContextCancelExitMessage(ctx, "Adapter")
 

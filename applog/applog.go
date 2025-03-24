@@ -1,7 +1,6 @@
 package applog
 
 import (
-	"context"
 	"faf-pioneer/build"
 	"fmt"
 	"go.uber.org/zap"
@@ -9,92 +8,138 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+const (
+	// remoteSinkMaxLogEntriesBufferSize is a maximum capacity of internal LogEntry queue,
+	// for asyncSinks (STDOUT and File sinks).
+	// asyncSink won't be able to store more than this amount temporary and will drop/discard any
+	// new entries. However, this is not a "fixed" limit, queue will be empties by background `process` calls.
+	asyncSinkMaxLogEntriesBufferSize = 1000
+	// remoteSinkMaxLogEntriesBufferSize is a maximum capacity of internal LogEntry queue,
+	//for remoteSinkInstance (remote sink).
+	//asyncSink won't be able to store more than this amount temporary and will drop/discard any
+	//new entries. However, this is not a "fixed" limit, queue will be empties by background `process` calls.
+	remoteSinkMaxLogEntriesBufferSize = 1000
+	// remoteSinkBatchSizeLimit is a limit of how many data should be sent to RemoteSinkDestination interface
+	// when certain amount of messages are written to remote sender.
+	remoteSinkBatchSizeLimit = 3 * 1024
+)
+
 type Logger = zap.Logger
 
-type LocalLogger struct {
-	logger *zap.Logger
+type LogSink interface {
+	Write(entry *LogEntry) error
+	Close() error
 }
 
-func (l LocalLogger) Info(msg string, fields ...zap.Field) {
-	l.logger.WithOptions(zap.AddCallerSkip(1)).Info(msg, fields...)
+type RemoteLogSender interface {
+	WriteLogEntryToRemote(entries []*LogEntry) error
 }
 
-func (l LocalLogger) Debug(msg string, fields ...zap.Field) {
-	l.logger.WithOptions(zap.AddCallerSkip(1)).Debug(msg, fields...)
-}
-
-func (l LocalLogger) Error(msg string, fields ...zap.Field) {
-	l.logger.WithOptions(zap.AddCallerSkip(1)).Error(msg, fields...)
-}
-
-func (l LocalLogger) Fatal(msg string, fields ...zap.Field) {
-	l.logger.WithOptions(zap.AddCallerSkip(1)).Fatal(msg, fields...)
-}
-
-func OnlyLocal() LocalLogger {
-	return LocalLogger{logger: def}
-}
-
-type RemoteLogger interface {
-	WriteLogEntryToRemote(entry *LogEntry) error
+type baseSink interface {
+	Shutdown(timeout time.Duration)
 }
 
 type LogEntry struct {
-	Entry  *zapcore.CheckedEntry
+	Entry  *zapcore.Entry
 	Fields []zap.Field
 }
 
+var (
+	opts = []zap.Option{
+		zap.AddCaller(),
+	}
+	logFile *os.File
+
+	noRemoteLogger *zap.Logger
+	stdoutCore     zapcore.Core
+	fileCore       zapcore.Core
+
+	acceptingLogs      int32 = 1
+	mu                 sync.Mutex
+	globalLogger       *zap.Logger
+	asyncSinks         []baseSink
+	remoteSinkInstance *remoteSink
+)
+
 func Info(msg string, fields ...zapcore.Field) {
-	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.InfoLevel, msg)
-	entry.Write(fields...)
-	logToRemote(entry, fields)
-}
-
-func Warn(msg string, fields ...zapcore.Field) {
-	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.WarnLevel, msg)
-	entry.Write(fields...)
-	logToRemote(entry, fields)
-}
-
-func Debug(msg string, fields ...zapcore.Field) {
-	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.DebugLevel, msg)
-	entry.Write(fields...)
-	logToRemote(entry, fields)
-}
-
-func Error(msg string, fields ...zapcore.Field) {
-	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.ErrorLevel, msg)
-	entry.Write(fields...)
-	logToRemote(entry, fields)
-}
-
-func Fatal(msg string, fields ...zapcore.Field) {
-	entry := def.WithOptions(zap.AddCallerSkip(1)).Check(zap.FatalLevel, msg)
-	entry.Write(fields...)
-	logToRemote(entry, fields)
-}
-
-func logToRemote(entry *zapcore.CheckedEntry, fields []zapcore.Field) {
-	if remoteLogger == nil || entry == nil || atomic.LoadInt32(&acceptingLogs) == 0 {
+	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.InfoLevel, msg)
+	if entry == nil {
 		return
 	}
 
-	remoteEntry := &LogEntry{
-		Entry:  entry,
-		Fields: fields,
+	entry.Write(fields...)
+	logToRemoteSink(entry, fields)
+}
+
+func Warn(msg string, fields ...zapcore.Field) {
+	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.DebugLevel, msg)
+	if entry == nil {
+		return
+	}
+	entry.Write(fields...)
+	logToRemoteSink(entry, fields)
+}
+
+func Debug(msg string, fields ...zapcore.Field) {
+	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.WarnLevel, msg)
+	if entry == nil {
+		return
+	}
+	entry.Write(fields...)
+	logToRemoteSink(entry, fields)
+}
+
+func Error(msg string, fields ...zapcore.Field) {
+	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.ErrorLevel, msg)
+	if entry == nil {
+		return
+	}
+	entry.Write(fields...)
+	logToRemoteSink(entry, fields)
+}
+
+func Fatal(msg string, fields ...zapcore.Field) {
+	entry := globalLogger.WithOptions(zap.AddCallerSkip(1)).Check(zapcore.FatalLevel, msg)
+	if entry == nil {
+		return
 	}
 
-	if err := remoteLogger.WriteLogEntryToRemote(remoteEntry); err != nil {
-		def.WithOptions(zap.AddCallerSkip(1)).Debug(
-			"failed to write into remote log server",
-			zap.Error(err),
-		)
+	entry.Write(fields...)
+	logToRemoteSink(entry, fields)
+	os.Exit(1)
+}
+
+func logToRemoteSink(entry *zapcore.CheckedEntry, fields []zapcore.Field) {
+	if entry == nil || remoteSinkInstance == nil {
+		return
 	}
+
+	err := remoteSinkInstance.Write(&LogEntry{
+		Entry:  &entry.Entry,
+		Fields: fields,
+	})
+	if err != nil {
+		NoRemote().Error("remote sink write failed", zap.Error(err))
+	}
+}
+
+func NoRemote() *zap.Logger {
+	if noRemoteLogger == nil {
+		// Here we're creating a same configuration but without remoteSink.
+		// This is required to log errors in remoteSink events or inside sender's process loops.
+		// Otherwise, for remoteSink for example, calling same methods like `applog.Info` will cause
+		// a recursive stack overflow issue, which we wanted to avoid.
+		// For that purposes we are creating separate "safe" logger that we can use.
+		aggregation := zapcore.NewTee(stdoutCore, fileCore)
+		noRemoteLogger = zap.New(aggregation)
+	}
+	return noRemoteLogger
 }
 
 func LogStartup(launchArgs interface{}) {
@@ -110,19 +155,7 @@ func LogStartup(launchArgs interface{}) {
 	)
 }
 
-func GetLogger() *Logger {
-	return def
-}
-
-func SetRemoteLogger(rl RemoteLogger) {
-	remoteLogger = rl
-}
-
-func FromContext(ctx context.Context) *Logger {
-	return def.With(getFields(ctx)...)
-}
-
-func Initialize(userId uint, gameId uint64) {
+func Initialize(userId uint, gameId uint64, rawLogLevel uint) {
 	workdir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("Failed to get current working directory: %v", err)
@@ -142,46 +175,72 @@ func Initialize(userId uint, gameId uint64) {
 		log.Fatalf("Failed to create log directory: %v", err)
 	}
 
-	logFile, err = os.OpenFile(logFilename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err = os.OpenFile(logFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Fatalf("Failed to open log file '%s': %v", logFilename, err)
+		log.Fatalf("Failed to open log file: %v", err)
 	}
 
-	l := newLogger(opts...).With(
+	encoderConfig := getEncoderConfig()
+	logLevel := safeGetLogLevelOrDefault(rawLogLevel)
+
+	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
+	stdoutCore = zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), logLevel)
+
+	fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
+	fileCore = zapcore.NewCore(fileEncoder, zapcore.AddSync(logFile), logLevel)
+
+	stdoutAsync := newAsyncSink(stdoutCore, asyncSinkMaxLogEntriesBufferSize)
+	fileAsync := newAsyncSink(fileCore, asyncSinkMaxLogEntriesBufferSize)
+
+	asyncSinks = []baseSink{stdoutAsync, fileAsync}
+
+	aggCore := zapcore.NewTee(stdoutAsync, fileAsync)
+	globalLogger = zap.New(aggCore, opts...).With(
 		zap.Uint("localUserId", userId),
 		zap.Uint64("localGameId", gameId))
 
-	setLogger(l)
-	atomic.StoreInt32(&acceptingLogs, 1)
+	setLogger(globalLogger)
+}
+
+func SetRemoteLogSender(sender RemoteLogSender) {
+	if remoteSinkInstance != nil {
+		var foundIndex = -1
+		for i, sink := range asyncSinks {
+			if sink == remoteSinkInstance {
+				foundIndex = i
+				break
+			}
+		}
+
+		if foundIndex != -1 {
+			slices.Delete(asyncSinks, foundIndex, foundIndex+1)
+		}
+	}
+
+	remoteSinkInstance = newRemoteSink(sender, remoteSinkMaxLogEntriesBufferSize, getEncoderConfig())
+	asyncSinks = append(asyncSinks, remoteSinkInstance)
 }
 
 func Shutdown() {
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Let our logger sync entries to disk and flush buffers.
-	go func() {
-		defer wg.Done()
-		_ = def.Sync()
-	}()
+	// Shutdown all the sinks that we have.
+	mu.Lock()
+	for _, sink := range asyncSinks {
+		sink.Shutdown(3 * time.Second)
+	}
+	mu.Unlock()
 
 	// Let our logger write more logs for 0.5 second if we have something pending after
 	// main context was canceled.
+	syncDone := make(chan error, 1)
 	go func() {
-		defer wg.Done()
 		time.Sleep(500 * time.Millisecond)
 		atomic.StoreInt32(&acceptingLogs, 0)
-	}()
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
+		syncDone <- globalLogger.Sync()
 	}()
 
 	// Give sync and accepting log setter 3 seconds to finish everything and then shutdown.
 	select {
-	case <-done:
+	case <-syncDone:
 	case <-time.After(3 * time.Second):
 	}
 
@@ -190,76 +249,29 @@ func Shutdown() {
 	}
 }
 
-type logFieldKey struct{}
-
-func getFields(ctx context.Context) []zap.Field {
-	fields, ok := ctx.Value(logFieldKey{}).([]zap.Field)
-	if !ok {
-		return nil
+func safeGetLogLevelOrDefault(level uint) zapcore.Level {
+	converted := zapcore.Level(level)
+	if converted <= zapcore.DebugLevel || converted >= zapcore.InvalidLevel {
+		return zapcore.InfoLevel
 	}
-	return fields
+
+	return converted
 }
 
-func mergeFields(ctx context.Context, fields ...zap.Field) []zap.Field {
-	current := getFields(ctx)
-	result := make([]zap.Field, 0, len(current)+len(fields))
-	seen := make(map[string]struct{}, len(current)+len(fields))
-	for _, v := range fields {
-		seen[v.Key] = struct{}{}
-		result = append(result, v)
-	}
-	for _, v := range current {
-		if _, ok := seen[v.Key]; ok {
-			continue
-		}
-		seen[v.Key] = struct{}{}
-		result = append(result, v)
-	}
-	return result
-}
-
-func AddFields(ctx context.Context, fields ...zap.Field) context.Context {
-	fm := mergeFields(ctx, fields...)
-	return context.WithValue(ctx, logFieldKey{}, fm)
-}
-
-var (
-	opts = []zap.Option{
-		zap.AddCaller(),
-	}
-	def           = newLogger(opts...)
-	logFile       *os.File
-	remoteLogger  RemoteLogger
-	acceptingLogs int32 = 0
-)
-
-func newLogger(opts ...zap.Option) *Logger {
+func getEncoderConfig() zapcore.EncoderConfig {
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.TimeKey = "time"
+	encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	encoderConfig.EncodeDuration = zapcore.StringDurationEncoder
 	encoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-		enc.AppendString(t.UTC().Format(time.RFC3339)) // Ensure UTC
+		// Use UTC timezone for logs.
+		enc.AppendString(t.UTC().Format(time.RFC3339))
 	}
 
-	jsonEncoder := zapcore.NewJSONEncoder(encoderConfig)
-
-	consoleSyncer := zapcore.AddSync(os.Stdout)
-	fileSyncer := zapcore.AddSync(logFile)
-	logLevel := zapcore.DebugLevel
-
-	consoleCore := zapcore.NewCore(jsonEncoder, consoleSyncer, logLevel)
-	fileCore := zapcore.NewCore(jsonEncoder, fileSyncer, logLevel)
-
-	combinedCore := zapcore.NewTee(consoleCore, fileCore)
-	logger := zap.New(combinedCore, opts...)
-
-	defer func(logger *zap.Logger) {
-		_ = logger.Sync()
-	}(logger)
-
-	return logger
+	return encoderConfig
 }
 
-func setLogger(l *Logger) {
-	def = l
-	zap.ReplaceGlobals(def)
+func setLogger(instance *Logger) {
+	globalLogger = instance
+	zap.ReplaceGlobals(globalLogger)
 }

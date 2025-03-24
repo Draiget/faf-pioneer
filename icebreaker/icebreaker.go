@@ -29,7 +29,7 @@ func NewClient(ctx context.Context, apiRoot string, gameId uint64, accessToken s
 	}
 }
 
-func (c *Client) WriteLogEntryToRemote(_ *applog.LogEntry) error {
+func (c *Client) WriteLogEntryToRemote(_ []*applog.LogEntry) error {
 	// TODO: Endpoint to accept log entries on icebreaker side:
 	// 		 see: https://github.com/FAForever/faf-pioneer/issues/10
 	//		 see: https://github.com/FAForever/faf-icebreaker/issues/68

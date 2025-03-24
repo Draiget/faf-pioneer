@@ -13,6 +13,7 @@ import (
 	pionwebrtc "github.com/pion/webrtc/v4"
 	"go.uber.org/zap"
 	"strings"
+	"time"
 )
 
 type Adapter struct {
@@ -49,13 +50,24 @@ func (a *Adapter) Start() error {
 	}
 
 	if a.launcherInfo.ConsentLogSharing {
-		applog.SetRemoteLogger(a.icebreakerClient)
+		applog.SetRemoteLogSender(a.icebreakerClient)
 	}
 
 	iceBreakerEventChannel := make(chan icebreaker.EventMessage)
 	go func() {
-		if err = a.icebreakerClient.Listen(iceBreakerEventChannel); err != nil {
-			applog.Error("could not start listening ICE-Breaker API (server-side) events", zap.Error(err))
+		for {
+			err = a.icebreakerClient.Listen(iceBreakerEventChannel)
+			if err == nil {
+				break
+			}
+
+			applog.Error("Could not start listening ICE-Breaker API (server-side) events", zap.Error(err))
+
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
 		}
 	}()
 

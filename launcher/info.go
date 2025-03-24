@@ -15,6 +15,7 @@ type Info struct {
 	GpgNetClientPort  uint
 	ForceTurnRelay    bool
 	ConsentLogSharing bool
+	LogLevel          uint
 }
 
 func NewInfoFromFlags() *Info {
@@ -36,6 +37,8 @@ func NewInfoFromFlags() *Info {
 		"force-turn-relay", false, "Force TURN relay using WebRTC")
 	consentLogSharing := flag.Bool(
 		"consent-log-sharing", false, "Consent log sharing")
+	logLevel := flag.Uint(
+		"log-level", 0, "Log level: -1 - Trace, 0 - Info, 1 - Error, 2/3 - Panic, 4 - Fatal")
 
 	flag.Parse()
 
@@ -49,6 +52,7 @@ func NewInfoFromFlags() *Info {
 		GpgNetClientPort:  *gpgNetClientPort,
 		ForceTurnRelay:    *forceTurnRelay,
 		ConsentLogSharing: *consentLogSharing,
+		LogLevel:          *logLevel,
 	}
 }
 
