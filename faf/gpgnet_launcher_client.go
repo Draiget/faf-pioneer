@@ -6,7 +6,6 @@ import (
 	"errors"
 	"faf-pioneer/applog"
 	"faf-pioneer/gpgnet"
-	"fmt"
 	"go.uber.org/zap"
 	"io"
 	"net"
@@ -134,9 +133,9 @@ func (s *GpgNetLauncherClient) handleToAdapter(ctx context.Context, stream *Stre
 				return
 			}
 
-			applog.FromContext(s.ctx).Debug(fmt.Sprintf(
-				"Forwarding GPG-Net message '%s' in launcher client from (fafClientToAdapter) to the adapter",
-				msg.GetCommand()),
+			applog.FromContext(s.ctx).Debug(
+				"Forwarding GPG-Net message in launcher client from (fafClientToAdapter) to the adapter",
+				zap.String("command", msg.GetCommand()),
 			)
 
 			err := stream.WriteMessage(msg)

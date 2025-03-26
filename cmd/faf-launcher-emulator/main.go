@@ -78,6 +78,9 @@ func main() {
 	// - For Host (UserA) type in faf-launcher-emulator a command:
 	//   > `connect_to UserB 2 <gameToWebrtcPort of UserB>`
 
+	// join_to UserA 1 62339
+	// connect_to UserB 2 55893
+
 	for scanner.Scan() {
 		value := scanner.Text()
 		applog.Debug("Entered command", zap.String("rawCommand", value))
@@ -116,9 +119,6 @@ func main() {
 
 		if strings.HasPrefix(value, "connect_to") {
 			applog.Info("Sending join game messages to the adapter/game")
-
-			// connect_to UserA 1 14080
-			// connect_to UserB 2 14081
 
 			args := strings.Split(value, " ")[1:]
 			user := args[0]

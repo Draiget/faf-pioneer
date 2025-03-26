@@ -109,9 +109,7 @@ func (p *GameUDPProxy) receiveLoop() {
 			}
 
 			// Uncomment for debug: never in production.
-			// applog.Debug("UDP proxy data received from game",
-			// 	zap.String("receivedFrom", addr.String()),
-			// 	zap.ByteString("data", buffer[:n]))
+			// DumpPacket(buffer[:n], addr, "UDP proxy read data from peer", DumpDirectionFromPeer)
 
 			// We should not have below debug log calls here for prod releases,
 			// it may cause additional performance degradation which we wanted to avoid.
@@ -169,9 +167,7 @@ func (p *GameUDPProxy) sendLoop() {
 			}
 
 			// Uncomment for debug: never in production.
-			// applog.Info("UDP proxy forwarding data from game",
-			// 	zap.ByteString("data", data),
-			// 	zap.String("sentTo", p.localAddr.String()))
+			// DumpPacket(data, p.localAddr, "UDP proxy forwarding data to game", DumpDirectionToGame)
 
 			_, err := p.conn.WriteToUDP(data, p.localAddr)
 			if err != nil {

@@ -56,15 +56,11 @@ func (rs *remoteSink) process() {
 				continue
 			}
 
-			// If new message will overflow current limit, first we need to send everything
-			// we already buffered.
-			if rs.batchSize+entrySize > remoteSinkBatchSizeLimit && len(rs.batch) > 0 {
-				rs.flush()
-			}
 			rs.batch = append(rs.batch, entry)
 			rs.batchSize += entrySize
 
-			// If new message filled batch size limit, let's send it right away.
+			// If new message will overflow current limit, first we need to send everything
+			// we already buffered.
 			if rs.batchSize >= remoteSinkBatchSizeLimit {
 				rs.flush()
 			}

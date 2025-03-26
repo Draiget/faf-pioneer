@@ -206,9 +206,9 @@ func (s *GpgNetServer) handleToGame(ctx context.Context, stream *StreamWriter) {
 				return
 			}
 
-			applog.FromContext(ctx).Debug(fmt.Sprintf(
-				"Forwarding GPG-Net message '%s' in server from (toGameChannel) to the game",
-				msg.GetCommand()),
+			applog.FromContext(ctx).Debug(
+				"Forwarding GPG-Net message in server from (toGameChannel) to the game",
+				zap.String("command", msg.GetCommand()),
 			)
 
 			err := stream.WriteMessage(msg)
