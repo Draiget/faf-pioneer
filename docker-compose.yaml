@@ -28,14 +28,23 @@ services:
       timeout: 30s
       retries: 3
 
+  loki:
+    image: grafana/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      # For whatever reason Loki returns 503 for the first 15 seconds
+      test: wget -S -qO /dev/null http://localhost:3100/ready 2>&1 | awk '/HTTP\/[0-9.]+/ {if ($2 == 200) exit 0; else exit 1} END {if (NR == 0) exit 1}'
+
   faf-icebreaker:
-    image: faforever/faf-icebreaker:1.1.0
+    image: faforever/faf-icebreaker:1.1.1
     ports:
       - "0.0.0.0:8080:8080"
     environment:
       QUARKUS_PROFILE: dev
       DB_URL: jdbc:mariadb://mariadb:3306/faf-icebreaker?ssl=false
       RABBITMQ_HOST: rabbitmq
+      LOKI_BASE_URL: http://loki:3100
     depends_on:
       mariadb:
         condition: service_healthy

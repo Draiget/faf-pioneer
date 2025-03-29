@@ -85,6 +85,10 @@ More details can be found in [GPGnet protocol docs](docs/gpgnet.md).
 6. The ICE adapter tells the game to open a lobby with a predefined udp port.
 7. The FAF client tells the game through the ICE adapter whom to connect to.
 
+### faf-icebreaker REST API
+
+The icebreaker API can be looked up in SwaggerUI. Once started via docker compose, you can find at
+at http://localhost:8080/q/swagger-ui/.
 
 ## Glossary
 
