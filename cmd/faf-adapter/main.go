@@ -31,6 +31,8 @@ func main() {
 	if info.ConsentLogSharing {
 		applog.NoRemote().Info("Log sharing are enabled")
 		applog.SetRemoteLogSender(adapterInstance)
+	} else {
+		applog.NoRemote().Info("Log sharing is not enabled")
 	}
 
 	applog.LogStartupInfo(info)

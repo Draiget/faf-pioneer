@@ -94,7 +94,11 @@ func (a *Adapter) Start() error {
 
 	// Debug obtained/available ICE servers.
 	for _, server := range sessionGameResponse.Servers {
-		applog.Debug("Turn server", zap.Strings("urls", server.Urls))
+		applog.Debug("Stun/turn server", zap.Strings("urls", server.Urls))
+	}
+
+	if len(sessionGameResponse.Servers) == 0 {
+		applog.Error("No stun/turn servers available, potential server misconfiguration")
 	}
 
 	// Lookup for free UDP port that we can start using for game UDP connections and start `util.GameUDPProxy`.
