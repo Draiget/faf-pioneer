@@ -54,10 +54,10 @@ jobs:
 
       - name: Build Binary
         run: |
-          GOOS=${{ matrix.GOOS }} go build -o faf-pioneer-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.EXT }} ./cmd/faf-adapter
+          GOOS=${{ matrix.GOOS }} go build -o faf-pioneer-snapshot-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.EXT }} ./cmd/faf-adapter
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: faf-pioneer-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
-          path: faf-pioneer-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.EXT }}
+          name: faf-pioneer-snapshot-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
+          path: faf-pioneer-snapshot-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.EXT }}

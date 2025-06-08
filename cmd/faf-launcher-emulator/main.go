@@ -22,12 +22,16 @@ func main() {
 	defer cancel()
 
 	info := launcher.NewInfoFromFlags()
-	applog.Initialize(info.UserId, info.GameId, info.LogLevel)
+	err := applog.Initialize(info.UserId, info.GameId, info.LogLevel, info.LogPath)
+	if err != nil {
+		fmt.Printf("Failed to initialize app logger: %v\n", err)
+	}
+
 	defer applog.Shutdown()
 	defer util.WrapAppContextCancelExitMessage(ctx, "Launcher-emulator")
 
-	if err := info.Validate(); err != nil {
-		applog.Fatal("Failed to validate command line arguments", zap.Error(err))
+	if err = info.Validate(); err != nil {
+		applog.Error("Failed to validate command line arguments", zap.Error(err))
 		return
 	}
 
@@ -43,7 +47,7 @@ func main() {
 	fafProcess := NewGameProcess(ctx, info)
 
 	adapterConnected := func() {
-		if err := fafProcess.Start(); err != nil {
+		if err = fafProcess.Start(); err != nil {
 			applog.Error("Failed to start game process", zap.Error(err))
 			return
 		}
@@ -58,9 +62,9 @@ func main() {
 	}
 
 	go func() {
-		err := server.Listen(adapterToFafClient, fafClientToAdapter, adapterConnected)
+		err = server.Listen(adapterToFafClient, fafClientToAdapter, adapterConnected)
 		if err != nil {
-			applog.Fatal("Failed to connect to GPG-Net server", zap.Error(err))
+			applog.Error("Failed to connect to GPG-Net server", zap.Error(err))
 		}
 	}()
 

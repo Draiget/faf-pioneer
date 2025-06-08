@@ -57,7 +57,7 @@ func (c *Client) WriteLogEntryToRemote(entries []*applog.LogEntry) error {
 		SetBody(logEntries).
 		Post(url)
 
-	applog.NoRemote().Debug("Log entries are sent to remove server",
+	applog.NoRemote().Debug("Log entries are sent to remote server",
 		zap.Int("entriesCount", len(logEntries)),
 		zap.Any("entries", logEntries),
 	)
@@ -210,6 +210,11 @@ func (c *Client) Listen(channel chan EventMessage) error {
 					zap.String("eventType", e.EventType),
 				)
 			case *CandidatesMessage:
+				applog.Debug("Handing ICE-Breaker API event",
+					zap.Any("event", e),
+					zap.String("eventType", e.EventType),
+				)
+			case *PeerClosingMessage:
 				applog.Debug("Handing ICE-Breaker API event",
 					zap.Any("event", e),
 					zap.String("eventType", e.EventType),

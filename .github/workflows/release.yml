@@ -46,6 +46,15 @@ jobs:
             echo "VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
           fi
 
+      - name: Rename artifacts to include version
+        run: |
+          for file in artifacts/*/*; do
+          dir=$(dirname "$file")
+          base=$(basename "$file")
+          new_base=$(echo "$base" | sed "s/snapshot/${VERSION}/")
+          mv -v "$file" "$dir/$new_base"
+          done
+
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
